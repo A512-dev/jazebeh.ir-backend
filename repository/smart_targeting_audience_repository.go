@@ -21,12 +21,17 @@ const (
 	SmartTargetingSelectionPhaseExecution SmartTargetingSelectionPhase = "execution"
 )
 
-// SmartTargetingAudienceQuery describes the eligibility rules shared by exact
-// capacity, Test preview, and final selection. AllowedColors is empty for
-// platforms without a delivery-color restriction.
+// SmartTargetingAudienceQuery is the immutable eligibility contract supplied
+// to one capacity, Test-preview, or Execution-selection operation. Every
+// query in this repository applies the same Bundle-consumption exclusions;
+// callers should build it from the campaign's current or persisted snapshot,
+// never from partially updated request fields.
 type SmartTargetingAudienceQuery struct {
+	// BundleID scopes consumed-audience, reservation, and exclusion checks.
 	BundleID uint
-	Phase    SmartTargetingSelectionPhase
+	// Phase keeps Test and Execution behavior explicit even when their current
+	// eligibility SQL happens to look similar.
+	Phase SmartTargetingSelectionPhase
 	// ExcludeActiveTestReservationCampaignID keeps a campaign's own active
 	// Test reservation in its capacity population. A finalized Test campaign
 	// can refresh capacity before execution; its already-reserved sample is not
@@ -36,15 +41,26 @@ type SmartTargetingAudienceQuery struct {
 	// ExcludeActiveExecutionReservationCampaignID has the same purpose for an
 	// execution campaign that has already frozen its concrete reservation.
 	ExcludeActiveExecutionReservationCampaignID uint
-	TagIDs                                      []int64
-	ScoreClasses                                []string
-	AllowedColors                               []string
+	// TagIDs is the selected-tag union used for capacity and percentile bounds.
+	TagIDs []int64
+	// ScoreClasses is a canonical non-empty subset of A, B, and C. Selecting
+	// all three classes skips percentile work and includes unscored profiles.
+	ScoreClasses []string
+	// AllowedColors is empty when the platform/provider has no colour
+	// restriction; otherwise profiles must have one of these colours.
+	AllowedColors []string
 }
 
 type SmartTargetingAudienceRepository interface {
+	// CalculateCapacity counts the selected-tag union before and after eligibility
+	// consumption rules and requested score-class filtering.
 	CalculateCapacity(ctx context.Context, query SmartTargetingAudienceQuery) (*SmartTargetingAudienceCapacity, error)
+	// SelectCandidates returns deterministic score-ranked Execution candidates.
 	SelectCandidates(ctx context.Context, query SmartTargetingAudienceQuery, limit int64) ([]*models.AudienceProfile, error)
+	// CalculateScoreBounds returns one selected-tag-union p33/p66 pair for
+	// reuse by every tag query in one Test sampling operation.
 	CalculateScoreBounds(ctx context.Context, query SmartTargetingAudienceQuery) (*SmartTargetingScoreBounds, error)
+	// SelectIDsForTag returns only IDs for a single selected Test tag.
 	SelectIDsForTag(
 		ctx context.Context,
 		query SmartTargetingAudienceQuery,
@@ -53,6 +69,8 @@ type SmartTargetingAudienceRepository interface {
 		excludeAudienceIDs []int64,
 		limit int64,
 	) ([]int64, error)
+	// SelectForTag returns the complete profile fields needed to persist one
+	// single-tag Test-preview member.
 	SelectForTag(
 		ctx context.Context,
 		query SmartTargetingAudienceQuery,
@@ -63,6 +81,9 @@ type SmartTargetingAudienceRepository interface {
 	) ([]*models.AudienceProfile, error)
 }
 
+// SmartTargetingAudienceCapacity separates the tag-union size before Bundle
+// consumption exclusions (RawUniqueCount) from the usable size after those
+// exclusions and any requested score-class filter (EligibleUniqueCount).
 type SmartTargetingAudienceCapacity struct {
 	RawUniqueCount      int64 `gorm:"column:raw_unique_count"`
 	EligibleUniqueCount int64 `gorm:"column:eligible_unique_count"`
@@ -89,7 +110,15 @@ func (r *smartTargetingAudienceRepository) getDB(ctx context.Context) *gorm.DB {
 	return r.db.WithContext(ctx)
 }
 
-const smartTargetingBasePopulationCTE = `
+// smartTargetingEligiblePopulationBaseCTE defines the smallest shared
+// population: profiles matching the selected-tag union, reachable by delivery,
+// and not already consumed, reserved, committed, or explicitly excluded in
+// this Bundle. Keep its bind order synchronized with
+// smartTargetingEligiblePopulationArgs.
+//
+// It intentionally selects only ID and score; capacity and percentile queries
+// do not need delivery payload columns.
+const smartTargetingEligiblePopulationBaseCTE = `
 WITH tagged_population AS (
     SELECT ap.id, ap.normalized_score
     FROM audience_profiles AS ap
@@ -137,10 +166,11 @@ WITH tagged_population AS (
       )
 )`
 
-// Execution selection needs delivery columns. Capacity and score-bound work
-// use the slim CTE above so PostgreSQL does not materialize UID, phone, or tag
-// arrays for count/percentile-only operations.
-const smartTargetingSelectionBasePopulationCTE = `
+// smartTargetingSelectableAudienceBaseCTE has the same eligibility semantics
+// as smartTargetingEligiblePopulationBaseCTE, but retains fields required to
+// persist and later deliver exact candidate selections. Capacity and
+// percentile work use the slim CTE above to avoid materializing them.
+const smartTargetingSelectableAudienceBaseCTE = `
 WITH tagged_population AS (
     SELECT ap.id, ap.uid, ap.phone_number, ap.tags, ap.normalized_score
     FROM audience_profiles AS ap
@@ -188,7 +218,11 @@ WITH tagged_population AS (
       )
 )`
 
-const smartTargetingClassifiedPopulationCTE = `, percentile_bounds AS (
+// smartTargetingScoreClassificationCTE appends percentile bounds and a score
+// class to either eligible-population CTE. Thresholds are based on every
+// scored candidate in the selected-tag union: C is <= p33, B is (p33, p66],
+// A is > p66, and nil scores remain unscored.
+const smartTargetingScoreClassificationCTE = `, percentile_bounds AS (
     SELECT percentile_disc(ARRAY[0.33, 0.66]::double precision[])
                WITHIN GROUP (ORDER BY normalized_score) AS percentile_values
     FROM candidate_population
@@ -209,14 +243,21 @@ const smartTargetingClassifiedPopulationCTE = `, percentile_bounds AS (
     CROSS JOIN bounds
 )`
 
-const smartTargetingPopulationCTE = smartTargetingBasePopulationCTE + smartTargetingClassifiedPopulationCTE
-const smartTargetingSelectionPopulationCTE = smartTargetingSelectionBasePopulationCTE + smartTargetingClassifiedPopulationCTE
+const smartTargetingClassifiedEligiblePopulationCTE = smartTargetingEligiblePopulationBaseCTE + smartTargetingScoreClassificationCTE
+const smartTargetingClassifiedSelectableAudienceCTE = smartTargetingSelectableAudienceBaseCTE + smartTargetingScoreClassificationCTE
 
-func smartTargetingAllClasses(classes []string) bool {
+// smartTargetingSelectsAllScoreClasses reports the one canonical form that
+// means “do not filter by score.” It is intentionally strict so malformed or
+// reordered caller input cannot silently bypass score-class filtering.
+func smartTargetingSelectsAllScoreClasses(classes []string) bool {
 	return len(classes) == 3 && classes[0] == "A" && classes[1] == "B" && classes[2] == "C"
 }
 
-func smartTargetingPopulationArgs(query SmartTargetingAudienceQuery) []any {
+// smartTargetingEligiblePopulationArgs returns bind variables for both shared
+// eligible-population CTEs, in SQL placeholder order. An empty colour list is
+// represented by a boolean bypass plus an empty typed array so the SQL shape
+// remains stable.
+func smartTargetingEligiblePopulationArgs(query SmartTargetingAudienceQuery) []any {
 	colors := query.AllowedColors
 	if colors == nil {
 		colors = []string{}
@@ -252,19 +293,19 @@ func (r *smartTargetingAudienceRepository) CalculateCapacity(
 		return nil, fmt.Errorf("invalid smart-targeting audience count query")
 	}
 	var capacity SmartTargetingAudienceCapacity
-	if smartTargetingAllClasses(query.ScoreClasses) {
-		sql := smartTargetingBasePopulationCTE + `
+	if smartTargetingSelectsAllScoreClasses(query.ScoreClasses) {
+		sql := smartTargetingEligiblePopulationBaseCTE + `
 SELECT (SELECT COUNT(*) FROM tagged_population) AS raw_unique_count,
        (SELECT COUNT(*) FROM candidate_population) AS eligible_unique_count`
-		err := r.getDB(ctx).Raw(sql, smartTargetingPopulationArgs(query)...).Scan(&capacity).Error
+		err := r.getDB(ctx).Raw(sql, smartTargetingEligiblePopulationArgs(query)...).Scan(&capacity).Error
 		return &capacity, err
 	}
-	sql := smartTargetingPopulationCTE + `
+	sql := smartTargetingClassifiedEligiblePopulationCTE + `
 SELECT (SELECT COUNT(*) FROM tagged_population) AS raw_unique_count,
        COUNT(*) FILTER (WHERE (?::boolean OR score_class = ANY(?::text[]))) AS eligible_unique_count
 FROM classified`
-	args := append(smartTargetingPopulationArgs(query),
-		smartTargetingAllClasses(query.ScoreClasses), pq.Array(query.ScoreClasses))
+	args := append(smartTargetingEligiblePopulationArgs(query),
+		smartTargetingSelectsAllScoreClasses(query.ScoreClasses), pq.Array(query.ScoreClasses))
 	err := r.getDB(ctx).Raw(sql, args...).Scan(&capacity).Error
 	return &capacity, err
 }
@@ -278,31 +319,32 @@ func (r *smartTargetingAudienceRepository) SelectCandidates(
 		return nil, fmt.Errorf("invalid smart-targeting audience selection query")
 	}
 	var rows []*models.AudienceProfile
-	if smartTargetingAllClasses(query.ScoreClasses) {
-		sql := smartTargetingSelectionBasePopulationCTE + `
+	if smartTargetingSelectsAllScoreClasses(query.ScoreClasses) {
+		sql := smartTargetingSelectableAudienceBaseCTE + `
 SELECT id, uid, phone_number, tags, normalized_score
 FROM candidate_population
 ORDER BY normalized_score DESC NULLS LAST, id ASC
 LIMIT ?`
-		args := append(smartTargetingPopulationArgs(query), limit)
+		args := append(smartTargetingEligiblePopulationArgs(query), limit)
 		err := r.getDB(ctx).Raw(sql, args...).Scan(&rows).Error
 		return rows, err
 	}
-	sql := smartTargetingSelectionPopulationCTE + `
+	sql := smartTargetingClassifiedSelectableAudienceCTE + `
 SELECT id, uid, phone_number, tags, normalized_score
 FROM classified
 WHERE (?::boolean OR score_class = ANY(?::text[]))
 ORDER BY normalized_score DESC NULLS LAST, id ASC
 LIMIT ?`
-	args := append(smartTargetingPopulationArgs(query),
-		smartTargetingAllClasses(query.ScoreClasses), pq.Array(query.ScoreClasses), limit)
+	args := append(smartTargetingEligiblePopulationArgs(query),
+		smartTargetingSelectsAllScoreClasses(query.ScoreClasses), pq.Array(query.ScoreClasses), limit)
 	err := r.getDB(ctx).Raw(sql, args...).Scan(&rows).Error
 	return rows, err
 }
 
 // CalculateScoreBounds computes the selected-tag union's exact p33/p66 once
-// per sampling operation. The former per-tag query rebuilt and sorted this
-// union for every selected tag.
+// per sampling operation. Per-tag sampling then applies these same thresholds
+// to every selected tag, rather than rebuilding and sorting the union for each
+// tag. All score classes need no bounds because they include every candidate.
 func (r *smartTargetingAudienceRepository) CalculateScoreBounds(
 	ctx context.Context,
 	query SmartTargetingAudienceQuery,
@@ -310,7 +352,7 @@ func (r *smartTargetingAudienceRepository) CalculateScoreBounds(
 	if !query.valid() {
 		return nil, fmt.Errorf("invalid smart-targeting score-bound query")
 	}
-	if smartTargetingAllClasses(query.ScoreClasses) {
+	if smartTargetingSelectsAllScoreClasses(query.ScoreClasses) {
 		return &SmartTargetingScoreBounds{}, nil
 	}
 	sql, args := smartTargetingScoreBoundsQuery(query)
@@ -332,7 +374,7 @@ func (r *smartTargetingAudienceRepository) SelectIDsForTag(
 	excludeAudienceIDs []int64,
 	limit int64,
 ) ([]int64, error) {
-	sql, args, err := smartTargetingPerTagSelectionQuery(query, bounds, tagID, excludeAudienceIDs, limit, true)
+	sql, args, err := buildSmartTargetingTestTagSelectionQuery(query, bounds, tagID, excludeAudienceIDs, limit, true)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +400,7 @@ func (r *smartTargetingAudienceRepository) SelectForTag(
 	excludeAudienceIDs []int64,
 	limit int64,
 ) ([]*models.AudienceProfile, error) {
-	sql, args, err := smartTargetingPerTagSelectionQuery(query, bounds, tagID, excludeAudienceIDs, limit, false)
+	sql, args, err := buildSmartTargetingTestTagSelectionQuery(query, bounds, tagID, excludeAudienceIDs, limit, false)
 	if err != nil {
 		return nil, err
 	}
@@ -369,6 +411,11 @@ func (r *smartTargetingAudienceRepository) SelectForTag(
 	return rows, nil
 }
 
+// smartTargetingScoreBoundsQuery returns only the p33/p66 pair, not candidate
+// rows or a classified dataset. It intentionally duplicates the base-population
+// eligibility predicates so PostgreSQL can aggregate the narrow profile set
+// directly rather than materializing the classification CTE. Keep these
+// predicates equivalent to the eligible-population CTE and Test tag selector.
 func smartTargetingScoreBoundsQuery(query SmartTargetingAudienceQuery) (string, []any) {
 	sql := `
 	SELECT percentile_values[1] AS p33, percentile_values[2] AS p66
@@ -446,36 +493,40 @@ FROM (
 	return sql, args
 }
 
-func smartTargetingPerTagSelectionQuery(
+// buildSmartTargetingTestTagSelectionQuery returns one tag's currently
+// eligible Test candidates. excludeAudienceIDs is the in-memory list already
+// chosen for earlier tags in this same preview, preventing a profile from
+// being selected twice before any reservation exists.
+func buildSmartTargetingTestTagSelectionQuery(
 	query SmartTargetingAudienceQuery,
 	bounds *SmartTargetingScoreBounds,
 	tagID int64,
 	excludeAudienceIDs []int64,
 	limit int64,
-	idsOnly bool,
+	selectIDsOnly bool,
 ) (string, []any, error) {
 	if !query.valid() || tagID <= 0 || limit <= 0 {
 		return "", nil, fmt.Errorf("invalid smart-targeting per-tag sample query")
 	}
-	selected := false
+	isSelectedTag := false
 	for _, candidateTagID := range query.TagIDs {
 		if candidateTagID == tagID {
-			selected = true
+			isSelectedTag = true
 			break
 		}
 	}
-	if !selected {
+	if !isSelectedTag {
 		return "", nil, fmt.Errorf("smart-targeting per-tag sample is not in the selected tag set")
 	}
 	if excludeAudienceIDs == nil {
 		excludeAudienceIDs = []int64{}
 	}
-	columns := "ap.id, ap.uid, ap.phone_number, ap.tags, ap.normalized_score"
-	if idsOnly {
-		columns = "ap.id"
+	selectColumns := "ap.id, ap.uid, ap.phone_number, ap.tags, ap.normalized_score"
+	if selectIDsOnly {
+		selectColumns = "ap.id"
 	}
 	sql := `
-SELECT ` + columns + `
+SELECT ` + selectColumns + `
 FROM audience_profiles AS ap
 WHERE ap.tags @> ARRAY[?]::integer[]
   AND ap.phone_number IS NOT NULL
@@ -549,7 +600,7 @@ WHERE ap.tags @> ARRAY[?]::integer[]
   )`
 	args = append(args, pq.Array(excludeAudienceIDs))
 
-	scorePredicate, scoreArgs, err := smartTargetingPerTagScorePredicate(query.ScoreClasses, bounds)
+	scorePredicate, scoreArgs, err := buildSmartTargetingScoreClassPredicate(query.ScoreClasses, bounds)
 	if err != nil {
 		return "", nil, err
 	}
@@ -560,7 +611,11 @@ LIMIT ?`
 	return sql, args, nil
 }
 
-func smartTargetingPerTagScorePredicate(classes []string, bounds *SmartTargetingScoreBounds) (string, []any, error) {
+// buildSmartTargetingScoreClassPredicate translates the selected score classes
+// into a predicate over one tag's candidates. It uses precomputed union-wide
+// bounds so tags cannot drift into different A/B/C definitions within a single
+// Test-preview calculation.
+func buildSmartTargetingScoreClassPredicate(classes []string, bounds *SmartTargetingScoreBounds) (string, []any, error) {
 	key := strings.Join(classes, ",")
 	if key == "A,B,C" {
 		return "", nil, nil
