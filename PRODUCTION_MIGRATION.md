@@ -75,34 +75,20 @@ chmod +x backup-yamata-server.sh
 ```
 
 This does not stop, restart, or otherwise interrupt production. It requests
-background Redis snapshots (never synchronous `SAVE`), copies the newest completed dump from `postgres_backups_beta` as the
-main database backup (so it never captures the current state of
-`yamata-postgres-beta`), takes a consistent online dump of Sentry, and archives
-the remaining Docker volumes. It also includes uploads, logs, Grafana,
+background Redis snapshots (never synchronous `SAVE`), creates an online
+Sentry/GlitchTip database dump, and archives the remaining non-main-database
+Docker volumes. The main database dump and scheduled backup history are
+deliberately excluded and the main dump must be downloaded separately. The
+archive includes uploads, logs, Grafana,
 Prometheus, pgAdmin data, certificates, the
 complete project working tree (including `.env.beta` and Git-ignored files),
 file-backed secrets/certificates referenced by the environment, Docker images,
 manifests, `/etc/hosts`, and the source Docker daemon configuration when present.
 
-To use a particular verified nightly dump instead of the automatic selection,
-pass its absolute path:
-
-```bash
-./backup-yamata-server.sh --project-dir /srv/yamata \
-  --output-dir "$HOME" \
-  --main-db-backup /absolute/path/to/DB_NAME-YYYYMMDDTHHMMSSZ.dump
-```
-
-The resulting archive is an online point-in-time migration artifact, not an
-atomically frozen whole-server image: writes made after last night's main
-database dump are intentionally absent, and frequently changing non-database
-volumes (for example Prometheus data and logs) are not globally atomic. Do not
-use `--leave-stopped`; it is kept only for compatibility and is ignored.
-
-The seven-day `postgres_backups_beta` history is intentionally not copied by
-default: the selected, validated nightly dump is already stored as
-`db/yamata-main.dump`. Add `--include-postgres-backup-history` only when enough
-extra space is available and retaining every historical dump is required.
+The resulting archive is an online server artifact without the main PostgreSQL
+database. It is not an atomically frozen whole-server image: frequently changing
+volumes (for example Prometheus data and logs) are not globally atomic. Do not use
+`--leave-stopped`; it is kept only for compatibility and is ignored.
 
 Transfer these three files to the destination:
 
@@ -120,7 +106,7 @@ sha256sum -c yamata-backup-YYYYMMDDTHHMMSSZ.tar.gz.sha256
 
 Keep the source running while the archive is copied, restored, and validated.
 Only stop it during the final DNS cutover, after accepting the intentional
-main-database recovery point from the nightly dump.
+main-database recovery point from the separately downloaded dump.
 
 ## 4. Restore the server backup
 
@@ -128,12 +114,12 @@ main-database recovery point from the nightly dump.
 chmod +x restore-yamata-backup.sh
 ./restore-yamata-backup.sh \
   "$HOME/yamata-backup-YYYYMMDDTHHMMSSZ.tar.gz" \
+  --main-db-backup /absolute/path/to/yamata-main.dump \
   /srv/yamata
 ```
 
 The restore discovers the original Compose project prefix, restores the actual
-prefixed volumes (including pgAdmin and, when explicitly included,
-`postgres_backups_beta`), restores
+prefixed volumes (including pgAdmin), restores
 `/etc/hosts` when it is present in the archive, validates certificates without issuing or renewing them,
 fixes prompt-file readability, applies the idempotent migrations needed through
 the required subset's current endpoint (0152), and starts the API
