@@ -163,6 +163,16 @@ not become an inevitably failing worker job.
 | Campaign update + `Complete` | Publishes satisfied tags, preview hash/time, effective count and active selection ID, then lease-guardedly writes results/cost/fingerprint/calculated status. |
 | `Fail` | Lease-guarded worker failure transition. |
 
+### Sampling-order limitation
+
+`SelectForTag` currently applies `LIMIT` without an `ORDER BY`. PostgreSQL may
+therefore return rows in planner/storage-dependent order: the resulting Test
+sample is neither statistically random nor reproducible for unchanged inputs.
+`ORDER BY random()` is deliberately not used because it is prohibitively
+expensive at the expected population size. A future implementation should use
+an indexed or seeded sampling strategy and persist its seed/algorithm version
+with the calculation so the chosen sample remains explainable.
+
 At finalization, `ReserveForCampaign` reloads the preview, locks audience rows
 in stable ID order, rechecks hard availability, and inserts active Test
 reservations. It never substitutes a conflicting person; that requires a new
@@ -197,6 +207,26 @@ At send time, a reservation-aware campaign is fail-closed: it can only
 materialize its persisted reservation. The scheduler inserts immutable bundle
 membership and tag attribution, then marks reservation rows materialized. Only
 an explicit legacy compatibility version can use the old fresh-selection path.
+
+## Supporting campaign-lifecycle integration points
+
+The dedicated Smart Targeting flows and repositories do not operate in
+isolation. The following files enforce the configuration, approval, delivery,
+observability, and shared-allocation rules at their boundaries.
+
+For their lifecycle sequencing and durable-state contracts, see
+[SMART_TARGETING_CAMPAIGN_LIFECYCLE_INTEGRATIONS_README.md](SMART_TARGETING_CAMPAIGN_LIFECYCLE_INTEGRATIONS_README.md).
+
+| File | Responsibility and Smart Targeting invariant |
+| --- | --- |
+| [smart_targeting_delivery_eligibility.go](smart_targeting_delivery_eligibility.go) | Resolves the effective sender provider from the campaign line number. A configured Candoo SMS line restricts Smart Targeting to black audiences; PayamSMS, missing, and retired line configuration retain the historical unrestricted-color behavior. The resulting colors are part of capacity/sampling/Execution input and must be recomputed when sender configuration changes. |
+| [smart_targeting_execution_reservation_metrics.go](smart_targeting_execution_reservation_metrics.go) | Records a Prometheus counter for Execution-reservation finalization failures. It maps stable repository errors—insufficient capacity, conflict, concurrent change, stale/corrupt/missing/unavailable reservation—to bounded reason labels, preserving useful failure telemetry without using unbounded error text as a label. |
+| [campaign_flow.go](campaign_flow.go) | Main customer-facing orchestration. It resolves the targeting method on create/update, persists or replaces ordered selected tags, invalidates obsolete Test previews, gates price/capacity on a current exact generation, and finalizes campaigns under campaign/Bundle locks. Test finalization requires and reserves the immutable preview; Execution finalization requires a fresh ready calculation, verifies its fingerprint, releases any Test reservation, commits the calculation, and creates the immutable Execution reservation. |
+| [campaign_admin_flow.go](campaign_admin_flow.go) | Approval re-locks the campaign and shared Bundle ledger. For Smart Targeting Test campaigns it requires a current frozen intent and an active reservation whose member count equals the preview’s effective audience count before approval can consume the frozen budget. Terminal admin transitions also participate in reservation release. |
+| [campaign_bot_flow.go](campaign_bot_flow.go) | Worker/readiness responses validate ordered selected tags. For Smart Targeting Test campaigns they resolve the current-or-frozen preview intent, expose the satisfied tags and immutable selection ID, and set the reported audience count from that intent rather than mutable campaign defaults. |
+| [campaign_repository.go](../repository/campaign_repository.go) | Campaign read projections include Test-preview fields and `smart_targeting_execution_reservation_version`. Retaining these fields is essential: a later campaign update/status transition must not write a zero value that disconnects a valid frozen reservation. |
+| [campaign_execution_repository.go](../repository/campaign_execution_repository.go) | Shared Bundle allocation queries derive non-Excel campaign demand from the effective JSON targeting method, explicitly recognizing Smart Targeting. Those allocation rows feed the availability/fingerprint rules that prevent competing bundle work from overcommitting audiences. |
+| [tag_test_performance_repository.go](../repository/tag_test_performance_repository.go) | Maintains campaign Test-performance reports for attributable Smart Targeting Test/Execution campaigns. `CampaignSelectedTagRepository.ListAvailable` consumes that performance data when building the tag-selection catalog and its priority ordering. |
 
 ## Scheduler relation
 
@@ -244,3 +274,13 @@ count, bundle-lock wait time, selected-tag count, and `EXPLAIN (ANALYZE,
 BUFFERS)` for production-shaped audience queries. Preserve the principal
 invariant while optimizing: an audience must not be silently reused across
 conflicting campaign work in the same bundle.
+
+## Related environment variables
+
+- `SMART_TARGETING_CAPACITY_SCHEDULER_ENABLED`
+- `SMART_TARGETING_TEST_SAMPLING_SCHEDULER_ENABLED`, `SMART_TARGETING_TEST_SAMPLING_MAX_PARALLEL_RUNS`
+- `SMART_TARGETING_EXECUTION_CALCULATION_SCHEDULER_ENABLED`, `SMART_TARGETING_EXECUTION_CALCULATION_MAX_PARALLEL_RUNS`
+
+The sampling and execution switches fall back to
+`SMART_TARGETING_CAPACITY_SCHEDULER_ENABLED` when unset. See
+[`config/production.go`](../config/production.go) for defaults.
