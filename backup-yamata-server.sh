@@ -335,11 +335,21 @@ fi
 
 PROJECT_PARENT="$(dirname "$PROJECT_DIR")"
 PROJECT_BASENAME="$(basename "$PROJECT_DIR")"
-tar -C "$PROJECT_PARENT" \
-	--exclude="$PROJECT_BASENAME/.gocache" \
-	--exclude="$PROJECT_BASENAME/.git" \
-	-czf "$BACKUP_ROOT/repo/yamata-project.tar.gz" \
-	"$PROJECT_BASENAME"
+# The production tree can contain files created by root-owned import jobs.
+# Read those files with sudo, but redirect the archive as the invoking user so
+# it remains writable by the rest of this backup process.
+if [[ $EUID -eq 0 ]]; then
+	tar -C "$PROJECT_PARENT" \
+		--exclude="$PROJECT_BASENAME/.gocache" \
+		--exclude="$PROJECT_BASENAME/.git" \
+		-czf "$BACKUP_ROOT/repo/yamata-project.tar.gz" \
+		"$PROJECT_BASENAME"
+else
+	sudo tar -C "$PROJECT_PARENT" \
+		--exclude="$PROJECT_BASENAME/.gocache" \
+		--exclude="$PROJECT_BASENAME/.git" \
+		-czf - "$PROJECT_BASENAME" > "$BACKUP_ROOT/repo/yamata-project.tar.gz"
+fi
 
 log "Saving every image referenced by the Compose configuration"
 mapfile -t IMAGES < <("${COMPOSE[@]}" config --images | sort -u)
