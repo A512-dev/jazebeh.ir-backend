@@ -60,6 +60,9 @@ Supporting repositories worth reading alongside this group are
 `campaign_targeting_capacity_repository.go`,
 `campaign_targeting_test_sampling_repository.go`, and
 `campaign_targeting_execution_{calculation,reservation}_repository.go`.
+For the surrounding customer, admin, bot, sender-eligibility, allocation, and
+metrics contracts, continue with
+[SMART_TARGETING_CAMPAIGN_LIFECYCLE_INTEGRATIONS_README.md](SMART_TARGETING_CAMPAIGN_LIFECYCLE_INTEGRATIONS_README.md).
 
 ## 3. Customer campaign lifecycle
 
@@ -153,3 +156,10 @@ are checked before results are reused or committed.
 Tests are co-located as `*_test.go`; the Smart Targeting and reservation tests
 are particularly useful as executable statements of the freshness and
 concurrency contracts.
+
+## Related environment variables
+
+This guide spans every documented flow. The complete canonical list, defaults,
+and validation rules are in [`config/production.go`](../config/production.go)
+and [`env.template`](../env.template). The flow-specific appendices in the
+other README files list the relevant variables by subsystem.
