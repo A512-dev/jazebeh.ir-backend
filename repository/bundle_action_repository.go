@@ -20,15 +20,25 @@ type BundleActionRepository interface {
 	ByID(context.Context, int64) (*models.BundleActionFile, error)
 	List(context.Context, uint, int, int) ([]*models.BundleActionFile, int64, error)
 	RequestDelete(context.Context, int64, uint, time.Time) error
+	PromotePending(context.Context, int64, string, time.Time) error
+	DiscardStaged(context.Context, int64) (bool, error)
 	ClaimPending(context.Context, int, time.Time, time.Time) ([]*models.BundleActionFile, error)
-	StoreUIDsAndResult(context.Context, int64, uint, []string, int64, int64, int64, time.Time) error
-	Complete(context.Context, int64, time.Time) error
-	Fail(context.Context, int64, time.Time, string, string) error
+	StoreUIDsAndResult(context.Context, int64, uint, time.Time, []string, int64, int64, int64, time.Time) error
+	Complete(context.Context, int64, time.Time, time.Time) error
+	Fail(context.Context, int64, time.Time, time.Time, string, string) error
 	Summary(context.Context, uint) (*models.BundleActionSummary, error)
 	CampaignMetric(context.Context, uint, uint) (*models.BundleActionCampaignMetric, error)
 	TagMetrics(context.Context, uint) ([]*models.BundleActionTagMetric, error)
 	ActiveUIDSet(context.Context, uint, []string) (map[string]bool, error)
 }
+
+// ErrBundleActionFileLeaseLost means that the worker no longer owns the action
+// file. Callers must not publish any more work for that claim.
+var ErrBundleActionFileLeaseLost = errors.New("bundle action file lease lost")
+
+// ErrBundleActionFileNotStaged means an upload could not be promoted or
+// discarded because it is no longer in the non-claimable staging state.
+var ErrBundleActionFileNotStaged = errors.New("bundle action file is not staged")
 
 type BundleActionRepositoryImpl struct{ db *gorm.DB }
 
@@ -75,6 +85,35 @@ func (r *BundleActionRepositoryImpl) RequestDelete(ctx context.Context, id int64
 		Where("id = ? AND status = ?", id, models.BundleActionFileProcessed).
 		Updates(map[string]any{"status": models.BundleActionFileDeletePending, "deleted_by_customer_id": customerID, "updated_at": at}).
 		Error
+}
+
+// PromotePending makes an action file claimable only after its storage path is
+// durable. Updating the status and path in one statement prevents a worker from
+// ever claiming a placeholder path.
+func (r *BundleActionRepositoryImpl) PromotePending(ctx context.Context, id int64, storagePath string, at time.Time) error {
+	result := r.getDB(ctx).
+		Model(&models.BundleActionFile{}).
+		Where("id = ? AND status = ?", id, models.BundleActionFileStaging).
+		Updates(map[string]any{"status": models.BundleActionFilePending, "storage_path": storagePath, "updated_at": at})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrBundleActionFileNotStaged
+	}
+	return nil
+}
+
+// DiscardStaged removes an upload row only while it remains non-claimable. The
+// boolean reports whether the caller may safely remove its corresponding file.
+func (r *BundleActionRepositoryImpl) DiscardStaged(ctx context.Context, id int64) (bool, error) {
+	result := r.getDB(ctx).
+		Where("id = ? AND status = ?", id, models.BundleActionFileStaging).
+		Delete(&models.BundleActionFile{})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
 }
 
 func (r *BundleActionRepositoryImpl) ClaimPending(ctx context.Context, limit int, stale, at time.Time) ([]*models.BundleActionFile, error) {
@@ -163,19 +202,31 @@ FOR UPDATE OF f SKIP LOCKED`, []models.BundleActionFileStatus{models.BundleActio
 // Bundle, and an eligible UID may already appear in another file. The new and
 // duplicate counts do not filter by validation status.
 //
-// The file-level update requires status = 'processing'. If exactly one file is
-// not updated, the function returns an error. Any error rolls back all changes
-// in this transaction. Complete is called afterward by the business flow to mark
-// the file complete and publish live metrics.
+// Before changing any UIDs, this function locks and verifies the file's exact
+// processing lease (started_at). Any worker whose lease was reclaimed returns
+// ErrBundleActionFileLeaseLost without touching the UID snapshot. Complete is
+// called afterward by the business flow to mark the file complete and publish
+// live metrics.
 func (r *BundleActionRepositoryImpl) StoreUIDsAndResult(
 	ctx context.Context,
 	fileID int64,
 	bundleID uint,
+	leaseStartedAt time.Time,
 	uids []string,
 	total, duplicates, invalid int64,
 	at time.Time,
 ) error {
 	return r.getDB(ctx).Transaction(func(tx *gorm.DB) error {
+		var file models.BundleActionFile
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND status = ? AND started_at = ?", fileID, models.BundleActionFileProcessing, leaseStartedAt).
+			First(&file).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrBundleActionFileLeaseLost
+		}
+		if err != nil {
+			return err
+		}
 		if err := tx.Where("bundle_action_file_id = ?", fileID).Delete(&models.BundleActionFileUID{}).Error; err != nil {
 			return err
 		}
@@ -291,35 +342,47 @@ SET total_row_count=?,
     missing_delivery_count=(SELECT COUNT(*) FROM bundle_action_file_uids WHERE bundle_action_file_id=f.id AND validation_status='missing_delivery'),
     eligible_action_uid_count=(SELECT COUNT(*) FROM bundle_action_file_uids WHERE bundle_action_file_id=f.id AND validation_status='eligible'),
     updated_at=?
-WHERE f.id=? AND f.status='processing'`
-		result := tx.Exec(updateResult, total, len(uids), duplicates, invalid, at, fileID)
+WHERE f.id=? AND f.status='processing' AND f.started_at=?`
+		result := tx.Exec(updateResult, total, len(uids), duplicates, invalid, at, fileID, leaseStartedAt)
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected != 1 {
-			return fmt.Errorf("action file %d is no longer being processed", fileID)
+			return ErrBundleActionFileLeaseLost
 		}
 		return nil
 	})
 }
-func (r *BundleActionRepositoryImpl) Fail(ctx context.Context, id int64, at time.Time, code, message string) error {
+func (r *BundleActionRepositoryImpl) Fail(ctx context.Context, id int64, leaseStartedAt, at time.Time, code, message string) error {
 	if len(code) > 64 {
 		code = code[:64]
 	}
 	if len(message) > 255 {
 		message = message[:255]
 	}
-	return r.getDB(ctx).
+	result := r.getDB(ctx).
 		Model(&models.BundleActionFile{}).
-		Where("id=? AND status=?", id, models.BundleActionFileProcessing).
-		Updates(map[string]any{"status": models.BundleActionFileFailed, "processed_at": at, "error_code": code, "error_message": message, "updated_at": at}).
-		Error
+		Where("id=? AND status=? AND started_at=?", id, models.BundleActionFileProcessing, leaseStartedAt).
+		Updates(map[string]any{"status": models.BundleActionFileFailed, "processed_at": at, "error_code": code, "error_message": message, "updated_at": at})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrBundleActionFileLeaseLost
+	}
+	return nil
 }
 
-func (r *BundleActionRepositoryImpl) Complete(ctx context.Context, id int64, at time.Time) error {
+func (r *BundleActionRepositoryImpl) Complete(ctx context.Context, id int64, leaseStartedAt, at time.Time) error {
 	return r.getDB(ctx).Transaction(func(tx *gorm.DB) error {
 		var file models.BundleActionFile
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&file, id).Error; err != nil {
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND started_at = ? AND status IN ?", id, leaseStartedAt, []models.BundleActionFileStatus{models.BundleActionFileProcessing, models.BundleActionFileDeletePending}).
+			First(&file).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrBundleActionFileLeaseLost
+		}
+		if err != nil {
 			return err
 		}
 		// Refresh replaces every metric row for this Bundle.  Two files in the
@@ -330,15 +393,23 @@ func (r *BundleActionRepositoryImpl) Complete(ctx context.Context, id int64, at 
 			return err
 		}
 		if file.Status == models.BundleActionFileDeletePending {
-			if err := tx.Model(&models.BundleActionFile{}).Where("id=?", id).Updates(map[string]any{"status": models.BundleActionFileDeleted, "deleted_at": at, "processed_at": at, "updated_at": at}).Error; err != nil {
-				return err
+			result := tx.Model(&models.BundleActionFile{}).Where("id=? AND status=? AND started_at=?", id, models.BundleActionFileDeletePending, leaseStartedAt).Updates(map[string]any{"status": models.BundleActionFileDeleted, "deleted_at": at, "processed_at": at, "updated_at": at})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrBundleActionFileLeaseLost
 			}
 		} else if file.Status == models.BundleActionFileProcessing {
-			if err := tx.Model(&models.BundleActionFile{}).Where("id=?", id).Updates(map[string]any{"status": models.BundleActionFileProcessed, "processed_at": at, "updated_at": at}).Error; err != nil {
-				return err
+			result := tx.Model(&models.BundleActionFile{}).Where("id=? AND status=? AND started_at=?", id, models.BundleActionFileProcessing, leaseStartedAt).Updates(map[string]any{"status": models.BundleActionFileProcessed, "processed_at": at, "updated_at": at})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return ErrBundleActionFileLeaseLost
 			}
 		} else {
-			return fmt.Errorf("action file %d is not claimable", id)
+			return ErrBundleActionFileLeaseLost
 		}
 		if err := refreshBundleActionMetrics(tx, file.BundleID, at); err != nil {
 			return err
