@@ -7,6 +7,9 @@ import "time"
 type BundleActionFileStatus string
 
 const (
+	// Staging rows have not yet had their XLSX durably published. They must
+	// never be claimed by a worker.
+	BundleActionFileStaging       BundleActionFileStatus = "staging"
 	BundleActionFilePending       BundleActionFileStatus = "pending"
 	BundleActionFileProcessing    BundleActionFileStatus = "processing"
 	BundleActionFileProcessed     BundleActionFileStatus = "processed"
