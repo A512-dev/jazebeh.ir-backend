@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
 # Restore a Yamata production backup created by backup-yamata-server.sh.
-# Usage: ./restore-yamata-backup.sh BACKUP.tar.gz [PROJECT_DIR]
-# Example: ./restore-yamata-backup.sh ~/yamata-backup-20260801T041255Z.tar.gz /srv/yamata
 
 set -Eeuo pipefail
 umask 077
@@ -23,14 +21,47 @@ die() {
 }
 
 usage() {
-	printf 'Usage: %s BACKUP.tar.gz [PROJECT_DIR]\n' "$SCRIPT_NAME" >&2
+	cat >&2 <<EOF
+Usage: $SCRIPT_NAME BACKUP.tar.gz [PROJECT_DIR]
+       $SCRIPT_NAME BACKUP.tar.gz --main-db-backup MAIN.dump [PROJECT_DIR]
+
+Archives created by the current backup script exclude only the main PostgreSQL
+dump, so --main-db-backup is required for those archives. The Sentry/GlitchTip
+dump remains embedded. Older archives continue to use their embedded main dump.
+EOF
 	exit 2
 }
 
-[[ $# -ge 1 && $# -le 2 ]] || usage
+BACKUP_ARCHIVE=""
+PROJECT_DIR="/srv/yamata"
+MAIN_DB_BACKUP=""
+SENTRY_DB_BACKUP=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--main-db-backup)
+			[[ $# -ge 2 ]] || usage
+			MAIN_DB_BACKUP="$2"
+			shift 2
+			;;
+		--help|-h)
+			usage
+			;;
+		*)
+			if [[ -z "$BACKUP_ARCHIVE" ]]; then
+				BACKUP_ARCHIVE="$1"
+			elif [[ "$PROJECT_DIR" == /srv/yamata ]]; then
+				PROJECT_DIR="$1"
+			else
+				usage
+			fi
+			shift
+			;;
+	esac
+done
 
-BACKUP_ARCHIVE="$(readlink -f "$1")"
-PROJECT_DIR="${2:-/srv/yamata}"
+[[ -n "$BACKUP_ARCHIVE" ]] || usage
+
+BACKUP_ARCHIVE="$(readlink -f "$BACKUP_ARCHIVE")"
 readonly BACKUP_ARCHIVE PROJECT_DIR
 
 [[ -f "$BACKUP_ARCHIVE" ]] || die "Backup archive not found: $BACKUP_ARCHIVE"
@@ -122,8 +153,6 @@ readonly SOURCE_ARCHITECTURE TARGET_ARCHITECTURE
 
 for required_file in \
 	SHA256SUMS \
-	db/yamata-main.dump \
-	db/yamata-sentry.dump \
 	repo/yamata-project.tar.gz \
 	repo/docker-compose.beta.yml \
 	certs/letsencrypt.tar.gz \
@@ -131,6 +160,17 @@ for required_file in \
 	redis/sentry_redis_data_beta.tar.gz; do
 	[[ -f "$BACKUP_DIR/$required_file" ]] || die "Backup member is missing: $required_file"
 done
+
+if [[ -z "$MAIN_DB_BACKUP" && -f "$BACKUP_DIR/db/yamata-main.dump" ]]; then
+	MAIN_DB_BACKUP="$BACKUP_DIR/db/yamata-main.dump"
+fi
+[[ -n "$MAIN_DB_BACKUP" ]] || \
+	die "Main PostgreSQL dump is absent from this archive; provide --main-db-backup"
+MAIN_DB_BACKUP="$(readlink -f "$MAIN_DB_BACKUP")"
+[[ -f "$MAIN_DB_BACKUP" ]] || die "Main PostgreSQL dump not found: $MAIN_DB_BACKUP"
+SENTRY_DB_BACKUP="$BACKUP_DIR/db/yamata-sentry.dump"
+[[ -f "$SENTRY_DB_BACKUP" ]] || die "Sentry PostgreSQL dump not found in archive: $SENTRY_DB_BACKUP"
+readonly MAIN_DB_BACKUP SENTRY_DB_BACKUP
 
 SOURCE_POSTGRES_VOLUME=""
 if [[ -f "$BACKUP_DIR/manifests/docker-volumes.txt" ]]; then
@@ -204,10 +244,10 @@ done
 
 log "Validating PostgreSQL dumps"
 "${DOCKER[@]}" run --rm --entrypoint pg_restore \
-	-v "$BACKUP_DIR/db/yamata-main.dump:/backup.dump:ro" \
+	-v "$MAIN_DB_BACKUP:/backup.dump:ro" \
 	postgres:15-alpine -l /backup.dump >/dev/null
 "${DOCKER[@]}" run --rm --entrypoint pg_restore \
-	-v "$BACKUP_DIR/db/yamata-sentry.dump:/backup.dump:ro" \
+	-v "$SENTRY_DB_BACKUP:/backup.dump:ro" \
 	postgres:15-alpine -l /backup.dump >/dev/null
 
 if ! tar -tzf "$BACKUP_DIR/redis/redi_data_beta.tar.gz" | awk '
@@ -414,8 +454,12 @@ restore_volume "$BACKUP_DIR/volumes/grafana_data_beta.tar.gz" \
 	yamata-grafana-beta /var/lib/grafana
 restore_volume "$BACKUP_DIR/volumes/prometheus_data_beta.tar.gz" \
 	yamata-prometheus-beta /prometheus
-restore_volume "$BACKUP_DIR/volumes/postgres_backups_beta.tar.gz" \
-	yamata-postgres-backup-beta /backups
+if [[ -f "$BACKUP_DIR/volumes/postgres_backups_beta.tar.gz" ]]; then
+	restore_volume "$BACKUP_DIR/volumes/postgres_backups_beta.tar.gz" \
+		yamata-postgres-backup-beta /backups
+else
+	log "Scheduled PostgreSQL backup history is not included; using the separately supplied main database dump"
+fi
 restore_volume "$BACKUP_DIR/volumes/pgadmin_data_beta.tar.gz" \
 	yamata-pgadmin-beta /var/lib/pgadmin
 restore_volume "$BACKUP_DIR/volumes/pgadmin_nginx_logs_beta.tar.gz" \
@@ -456,7 +500,7 @@ log "Restoring main PostgreSQL database"
 	createdb -T template0 -U "$DB_USER" -O "$DB_USER" "$DB_NAME"
 "${DOCKER[@]}" exec -i yamata-postgres-beta pg_restore \
 	--exit-on-error --no-owner --no-privileges \
-	-U "$DB_USER" -d "$DB_NAME" < "$BACKUP_DIR/db/yamata-main.dump"
+	-U "$DB_USER" -d "$DB_NAME" < "$MAIN_DB_BACKUP"
 
 log "Applying schema changes required by selective data imports and current app"
 bash "$PROJECT_DIR/scripts/apply-yamata-required-migrations.sh" --repair "$PROJECT_DIR"
@@ -470,7 +514,7 @@ log "Restoring Sentry/GlitchTip PostgreSQL database"
 "${DOCKER[@]}" exec -i yamata-sentry-postgres-beta pg_restore \
 	--exit-on-error --no-owner --no-privileges \
 	-U "$SENTRY_POSTGRES_USER" -d "$SENTRY_POSTGRES_DB" \
-	< "$BACKUP_DIR/db/yamata-sentry.dump"
+	< "$SENTRY_DB_BACKUP"
 
 "${DOCKER[@]}" exec yamata-postgres-beta \
 	vacuumdb -U "$DB_USER" -d "$DB_NAME" --analyze-in-stages
