@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Create a backup consumed by restore-yamata-backup.sh.
+# Create a server backup with the main PostgreSQL database excluded.
 # Run from the repository root, or pass --project-dir explicitly.
 
 set -Eeuo pipefail
@@ -10,8 +10,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 OUTPUT_PARENT="$HOME"
 LEAVE_STOPPED=false
-MAIN_DB_BACKUP="latest"
-INCLUDE_POSTGRES_BACKUP_HISTORY=false
 
 log() {
 	printf '[backup] %s\n' "$*"
@@ -34,14 +32,9 @@ Options:
   --project-dir DIR   Project containing .env.beta and docker-compose.beta.yml
                       (default: directory containing this script)
   --output-dir DIR    Parent directory for the backup (default: \$HOME)
-  --main-db-backup X  Use X for the main database. X is an absolute .dump path
-                      or "latest" for the newest completed scheduled dump
-                      (default: latest); the live main database is never dumped
-  --include-postgres-backup-history
-                      Also archive every retained scheduled PostgreSQL dump.
-                      Disabled by default: yamata-main.dump already contains
-                      the selected nightly dump and the history can be large.
   --leave-stopped     Deprecated compatibility option; this script is online
+  The main PostgreSQL dump and its scheduled backup history are deliberately
+  excluded. Download the main dump separately for restore.
   --help              Show this help
 EOF
 	exit 2
@@ -63,15 +56,6 @@ while [[ $# -gt 0 ]]; do
 			LEAVE_STOPPED=true
 			shift
 			;;
-		--main-db-backup)
-			[[ $# -ge 2 ]] || usage
-			MAIN_DB_BACKUP="$2"
-			shift 2
-			;;
-		--include-postgres-backup-history)
-			INCLUDE_POSTGRES_BACKUP_HISTORY=true
-			shift
-			;;
 		--help|-h)
 			usage
 			;;
@@ -84,7 +68,7 @@ done
 PROJECT_DIR="$(readlink -f "$PROJECT_DIR")"
 mkdir -p "$OUTPUT_PARENT"
 OUTPUT_PARENT="$(readlink -f "$OUTPUT_PARENT")"
-readonly PROJECT_DIR OUTPUT_PARENT LEAVE_STOPPED MAIN_DB_BACKUP INCLUDE_POSTGRES_BACKUP_HISTORY
+readonly PROJECT_DIR OUTPUT_PARENT LEAVE_STOPPED
 
 [[ -f "$PROJECT_DIR/.env.beta" ]] || die "Missing $PROJECT_DIR/.env.beta"
 [[ -f "$PROJECT_DIR/docker-compose.beta.yml" ]] || \
@@ -99,7 +83,7 @@ case "$OUTPUT_PARENT/" in
 	"$PROJECT_DIR/"*) die "Output directory must not be inside the project" ;;
 esac
 
-for command_name in docker tar gzip sha256sum find sort awk grep readlink openssl stat; do
+for command_name in docker tar gzip sha256sum find sort awk grep readlink openssl stat du; do
 	command -v "$command_name" >/dev/null 2>&1 || die "Required command is missing: $command_name"
 done
 
@@ -125,13 +109,11 @@ source "$PROJECT_DIR/scripts/load-yamata-env.sh"
 load_yamata_env_file "$PROJECT_DIR/.env.beta" || \
 	die "Could not safely parse $PROJECT_DIR/.env.beta"
 
-: "${DB_NAME:?DB_NAME is missing from .env.beta}"
-: "${DB_USER:?DB_USER is missing from .env.beta}"
-: "${SENTRY_POSTGRES_DB:?SENTRY_POSTGRES_DB is missing from .env.beta}"
-: "${SENTRY_POSTGRES_USER:?SENTRY_POSTGRES_USER is missing from .env.beta}"
-
 COMPOSE=("${DOCKER[@]}" compose --env-file "$PROJECT_DIR/.env.beta" -f "$PROJECT_DIR/docker-compose.beta.yml")
 readonly COMPOSE
+
+: "${SENTRY_POSTGRES_DB:?SENTRY_POSTGRES_DB is missing from .env.beta}"
+: "${SENTRY_POSTGRES_USER:?SENTRY_POSTGRES_USER is missing from .env.beta}"
 
 for required_container in \
 	yamata-postgres-beta yamata-redis-beta yamata-postgres-backup-beta \
@@ -182,6 +164,12 @@ fi
 install -m 600 "$PROJECT_DIR/.env.beta" "$BACKUP_ROOT/repo/.env.beta"
 install -m 600 "$PROJECT_DIR/docker-compose.beta.yml" \
 	"$BACKUP_ROOT/repo/docker-compose.beta.yml"
+cat > "$BACKUP_ROOT/manifests/main-database-backups-excluded.txt" <<'EOF'
+The main PostgreSQL dump and the postgres_backups_beta scheduled-backup volume
+are intentionally excluded from this archive. Download the main database dump
+separately and supply it to restore-yamata-backup.sh when restoring this archive.
+The Sentry/GlitchTip PostgreSQL dump remains included as db/yamata-sentry.dump.
+EOF
 
 log "Validating configured certificates without issuing or renewing"
 NGINX_GENERATED_CONFIG="$PROJECT_DIR/docker/nginx/sites-available/generated/beta/yamata.conf"
@@ -244,26 +232,10 @@ log "Requesting Redis background point-in-time snapshots without stopping servic
 request_redis_snapshot yamata-redis-beta
 request_redis_snapshot yamata-sentry-redis-beta
 
-postgres_backup_volume="$("${DOCKER[@]}" inspect --format '{{range .Mounts}}{{if and (eq .Type "volume") (eq .Destination "/backups")}}{{.Name}}{{end}}{{end}}' yamata-postgres-backup-beta)"
-[[ -n "$postgres_backup_volume" ]] || die "Cannot resolve postgres backup volume"
-log "Copying the scheduled main PostgreSQL dump; live yamata-postgres-beta is not dumped"
-if [[ "$MAIN_DB_BACKUP" == latest ]]; then
-	latest_main_dump="$("${DOCKER[@]}" run --rm --entrypoint sh -v "$postgres_backup_volume:/from:ro" postgres:15-alpine -c 'find /from -maxdepth 1 -type f -name "*.dump" -exec basename {} \; | sort | tail -n 1')"
-	[[ -n "$latest_main_dump" ]] || die "No completed *.dump exists in postgres_backups_beta"
-	"${DOCKER[@]}" run --rm --entrypoint sh -v "$postgres_backup_volume:/from:ro" -v "$BACKUP_ROOT/db:/to" postgres:15-alpine -c "test -f /from/$latest_main_dump && cp /from/$latest_main_dump /to/yamata-main.dump"
-	printf '%s\n' "$latest_main_dump" > "$BACKUP_ROOT/manifests/main-db-backup-source.txt"
-else
-	[[ "$MAIN_DB_BACKUP" == /* && -f "$MAIN_DB_BACKUP" ]] || die "--main-db-backup must be latest or an existing absolute path"
-	install -m 600 "$MAIN_DB_BACKUP" "$BACKUP_ROOT/db/yamata-main.dump"
-	printf '%s\n' "$MAIN_DB_BACKUP" > "$BACKUP_ROOT/manifests/main-db-backup-source.txt"
-fi
-"${DOCKER[@]}" run --rm --entrypoint pg_restore -v "$BACKUP_ROOT/db/yamata-main.dump:/backup.dump:ro" postgres:15-alpine -l /backup.dump >/dev/null || die "Selected main PostgreSQL dump is invalid"
-
 log "Dumping Sentry PostgreSQL online"
 "${DOCKER[@]}" exec yamata-sentry-postgres-beta pg_dump \
 	-U "$SENTRY_POSTGRES_USER" -d "$SENTRY_POSTGRES_DB" -Fc \
 	> "$BACKUP_ROOT/db/yamata-sentry.dump"
-
 "${DOCKER[@]}" exec -i yamata-sentry-postgres-beta pg_restore -l \
 	< "$BACKUP_ROOT/db/yamata-sentry.dump" >/dev/null
 
@@ -304,12 +276,6 @@ backup_volume yamata-grafana-beta /var/lib/grafana \
 	"$BACKUP_ROOT/volumes" grafana_data_beta.tar.gz
 backup_volume yamata-prometheus-beta /prometheus \
 	"$BACKUP_ROOT/volumes" prometheus_data_beta.tar.gz
-if [[ "$INCLUDE_POSTGRES_BACKUP_HISTORY" == true ]]; then
-	backup_volume yamata-postgres-backup-beta /backups \
-		"$BACKUP_ROOT/volumes" postgres_backups_beta.tar.gz
-else
-	log "Skipping redundant PostgreSQL backup history; selected dump is stored as db/yamata-main.dump"
-fi
 if "${DOCKER[@]}" container inspect yamata-pgadmin-beta >/dev/null 2>&1; then
 	backup_volume yamata-pgadmin-beta /var/lib/pgadmin \
 		"$BACKUP_ROOT/volumes" pgadmin_data_beta.tar.gz
@@ -429,4 +395,5 @@ mv "$FINAL_ARCHIVE.partial" "$FINAL_ARCHIVE"
 BACKUP_SUCCEEDED=true
 
 log "Backup completed"
+du -h "$FINAL_ARCHIVE"
 printf '%s\n' "$BACKUP_ROOT" "$FINAL_ARCHIVE" "$FINAL_ARCHIVE.sha256"
