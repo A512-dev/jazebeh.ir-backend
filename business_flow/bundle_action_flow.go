@@ -31,7 +31,10 @@ const (
 	maxBundleActionFileRows int64 = 500_000
 )
 
-const defaultBundleActionFileStorageRoot = "data/uploads/bundle-action-files"
+const (
+	defaultBundleActionFileStorageRoot = "data/uploads/bundle-action-files"
+	bundleActionFileStagingDirectory   = ".bundle-action-file-staging"
+)
 
 // BundleActionFlow defines bundle action-file management and reporting operations.
 type BundleActionFlow interface {
@@ -91,6 +94,70 @@ func actionFileStoragePath(storageRoot string, bundleID uint, actionFileID int64
 	return filepath.Join(storageRoot, fmt.Sprintf("%d", bundleID), fmt.Sprintf("%d.xlsx", actionFileID))
 }
 
+func actionFileStagingPath(storageRoot string) (string, error) {
+	stagingDir := filepath.Join(storageRoot, bundleActionFileStagingDirectory)
+	if err := os.MkdirAll(stagingDir, 0750); err != nil {
+		return "", fmt.Errorf("create action staging directory: %w", err)
+	}
+	staged, err := os.CreateTemp(stagingDir, "bundle-action-*.xlsx")
+	if err != nil {
+		return "", fmt.Errorf("create action staging file: %w", err)
+	}
+	stagedPath := staged.Name()
+	keep := false
+	defer func() {
+		if !keep {
+			_ = staged.Close()
+			_ = os.Remove(stagedPath)
+		}
+	}()
+	if err := staged.Chmod(0640); err != nil {
+		return "", fmt.Errorf("set action staging permissions: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		return "", fmt.Errorf("close action staging file: %w", err)
+	}
+	keep = true
+	return stagedPath, nil
+}
+
+func writeStagedActionFile(stagedPath string, fileData []byte) error {
+	staged, err := os.OpenFile(stagedPath, os.O_WRONLY|os.O_TRUNC, 0640)
+	if err != nil {
+		return fmt.Errorf("open action staging file: %w", err)
+	}
+	defer staged.Close()
+	if _, err := staged.Write(fileData); err != nil {
+		return fmt.Errorf("write action staging file: %w", err)
+	}
+	if err := staged.Sync(); err != nil {
+		return fmt.Errorf("sync action staging file: %w", err)
+	}
+	return nil
+}
+
+func publishStagedActionFile(stagedPath, storagePath string) error {
+	storageDir := filepath.Dir(storagePath)
+	if err := os.MkdirAll(storageDir, 0750); err != nil {
+		return fmt.Errorf("create action storage: %w", err)
+	}
+	if err := os.Rename(stagedPath, storagePath); err != nil {
+		return fmt.Errorf("publish action storage: %w", err)
+	}
+	// The staging directory is below the same storage root, so rename is atomic.
+	// Syncing the destination directory makes the rename durable before the row
+	// becomes claimable.
+	dir, err := os.Open(storageDir)
+	if err != nil {
+		return fmt.Errorf("open action storage directory: %w", err)
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("sync action storage directory: %w", err)
+	}
+	return nil
+}
+
 // Upload validates, stores, and queues an XLSX action file for a customer bundle.
 func (flow *BundleActionFlowImpl) Upload(
 	ctx context.Context,
@@ -114,6 +181,15 @@ func (flow *BundleActionFlowImpl) Upload(
 	if len(fileData) == 0 {
 		return nil, NewBusinessError("ACTION_FILE_EMPTY", "action file is empty", nil)
 	}
+	stagedPath, err := actionFileStagingPath(flow.storageRoot)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeStagedActionFile(stagedPath, fileData); err != nil {
+		_ = os.Remove(stagedPath)
+		return nil, err
+	}
+
 	fileHash := sha256.Sum256(fileData)
 	now := utils.UTCNow()
 	actionFile := &models.BundleActionFile{
@@ -121,28 +197,42 @@ func (flow *BundleActionFlowImpl) Upload(
 		OriginalFileName:     filepath.Base(fileName),
 		ActionLevel:          actionLevel,
 		ContentSHA256:        hex.EncodeToString(fileHash[:]),
-		Status:               models.BundleActionFilePending,
+		Status:               models.BundleActionFileStaging,
 		UploadedByCustomerID: customerID,
 		CreatedAt:            now,
 		UpdatedAt:            now,
-		StoragePath:          "pending",
+		StoragePath:          stagedPath,
 	}
 	if err := flow.actionRepository.Create(ctx, actionFile); err != nil {
+		_ = os.Remove(stagedPath)
 		return nil, err
 	}
 	storagePath := actionFileStoragePath(flow.storageRoot, bundleID, actionFile.ID)
-	if err := os.MkdirAll(filepath.Dir(storagePath), 0750); err != nil {
-		return nil, fmt.Errorf("create action storage: %w", err)
-	}
-	if err := os.WriteFile(storagePath, fileData, 0640); err != nil {
-		return nil, fmt.Errorf("store action file: %w", err)
-	}
-	// TODO: Move to repo.
-	if err := flow.db.WithContext(ctx).Model(&models.BundleActionFile{}).Where("id=?", actionFile.ID).Update("storage_path", storagePath).Error; err != nil {
+	if err := publishStagedActionFile(stagedPath, storagePath); err != nil {
+		flow.cleanupStagedActionFile(actionFile.ID, stagedPath, storagePath)
 		return nil, err
 	}
+	if err := flow.actionRepository.PromotePending(ctx, actionFile.ID, storagePath, utils.UTCNow()); err != nil {
+		flow.cleanupStagedActionFile(actionFile.ID, stagedPath, storagePath)
+		return nil, fmt.Errorf("publish action file row: %w", err)
+	}
+	actionFile.Status = models.BundleActionFilePending
 	actionFile.StoragePath = storagePath
 	return actionFile, nil
+}
+
+// cleanupStagedActionFile removes bytes only after its non-claimable row was
+// removed. If promotion might have succeeded, retaining the final file is safer
+// than leaving a pending row without storage.
+func (flow *BundleActionFlowImpl) cleanupStagedActionFile(actionFileID int64, stagedPath, storagePath string) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	discarded, err := flow.actionRepository.DiscardStaged(cleanupCtx, actionFileID)
+	if err != nil || !discarded {
+		return
+	}
+	_ = os.Remove(stagedPath)
+	_ = os.Remove(storagePath)
 }
 
 // Get returns an action file when it belongs to the customer's bundle.
@@ -224,13 +314,18 @@ func (flow *BundleActionFlowImpl) CampaignMetric(
 }
 
 // ExecuteBundleActionFile processes a claimed action file or completes its pending deletion.
-func (flow *BundleActionFlowImpl) ExecuteBundleActionFile(ctx context.Context, actionFileID int64, _ time.Time) error {
+// Every durable mutation is fenced by leaseStartedAt so a reclaimed worker cannot
+// publish after a newer worker has claimed the file.
+func (flow *BundleActionFlowImpl) ExecuteBundleActionFile(ctx context.Context, actionFileID int64, leaseStartedAt time.Time) error {
 	actionFile, err := flow.actionRepository.ByID(ctx, actionFileID)
 	if err != nil {
 		return err
 	}
+	if actionFile.StartedAt == nil || !actionFile.StartedAt.Equal(leaseStartedAt) {
+		return repository.ErrBundleActionFileLeaseLost
+	}
 	if actionFile.Status == models.BundleActionFileDeletePending {
-		return flow.actionRepository.Complete(ctx, actionFileID, utils.UTCNow())
+		return flow.actionRepository.Complete(ctx, actionFileID, leaseStartedAt, utils.UTCNow())
 	}
 	if actionFile.Status != models.BundleActionFileProcessing {
 		return nil
@@ -240,6 +335,7 @@ func (flow *BundleActionFlowImpl) ExecuteBundleActionFile(ctx context.Context, a
 		_ = flow.actionRepository.Fail(
 			context.Background(),
 			actionFileID,
+			leaseStartedAt,
 			utils.UTCNow(),
 			"ACTION_FILE_PARSE_FAILED",
 			"The action file could not be parsed",
@@ -247,10 +343,10 @@ func (flow *BundleActionFlowImpl) ExecuteBundleActionFile(ctx context.Context, a
 		return err
 	}
 	now := utils.UTCNow()
-	if err := flow.actionRepository.StoreUIDsAndResult(ctx, actionFileID, actionFile.BundleID, uids, totalRowCount, duplicateUIDCount, invalidUIDCount, now); err != nil {
+	if err := flow.actionRepository.StoreUIDsAndResult(ctx, actionFileID, actionFile.BundleID, leaseStartedAt, uids, totalRowCount, duplicateUIDCount, invalidUIDCount, now); err != nil {
 		return err
 	}
-	return flow.actionRepository.Complete(ctx, actionFileID, now)
+	return flow.actionRepository.Complete(ctx, actionFileID, leaseStartedAt, now)
 }
 
 // parseBundleActionXLSX extracts sorted, unique valid UIDs and row-count metrics from an XLSX file.
