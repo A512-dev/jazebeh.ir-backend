@@ -121,6 +121,9 @@ active_imports="$(psql_scalar "SELECT count(*) FROM pg_stat_activity WHERE appli
 check_header() {
     local csv_file="$1" expected="$2" actual
     IFS= read -r actual <"$csv_file" || die "Could not read CSV header: $csv_file"
+    # CSV exports from Windows and Python's csv module commonly use CRLF.
+    # read removes LF but retains CR, which is not part of the header value.
+    actual="${actual%$'\r'}"
     [[ "$actual" == "$expected" ]] || die "Unexpected CSV header in $csv_file; expected: $expected"
 }
 check_header "$STATS_CSV" 'layer1_category,layer2_category,layer3_category,distinct_users,calculated_at,black_users,white_users,pink_users,weak_white,good_white,best_white,weak_black,good_black,best_black,weak_pink,good_pink,best_pink,stat_level,scored_users,p33,p66'
