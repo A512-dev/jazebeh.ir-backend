@@ -7,18 +7,18 @@ import (
 )
 
 func TestSmartTargetingPopulationUsesOptionalParameterizedColorFilter(t *testing.T) {
-	query := strings.ToLower(smartTargetingPopulationCTE)
+	query := strings.ToLower(smartTargetingClassifiedEligiblePopulationCTE)
 	for _, forbidden := range []string{"platform", "'white'", "'pink'", "candidate_stack", "insert into"} {
 		if strings.Contains(query, forbidden) {
-			t.Fatalf("capacity population unexpectedly contains %q:\n%s", forbidden, smartTargetingPopulationCTE)
+			t.Fatalf("capacity population unexpectedly contains %q:\n%s", forbidden, smartTargetingClassifiedEligiblePopulationCTE)
 		}
 	}
 	for _, required := range []string{"bundle_audience_selection_members", "used.bundle_id", "used.audience_id", "campaign_targeting_test_sample_reservations", "campaign_targeting_execution_reservations", "campaign_targeting_execution_calculations", "campaign_targeting_execution_calculation_members", "execution_calculation.status = 'committed'", "reserved.state = 'active'", "bundle_audience_exclusions", "bundle_exclusion.bundle_id", "bundle_exclusion.audience_id", "percentile_disc", "ap.color = any(?::text[])"} {
 		if !strings.Contains(query, required) {
-			t.Fatalf("capacity population is missing %q:\n%s", required, smartTargetingPopulationCTE)
+			t.Fatalf("capacity population is missing %q:\n%s", required, smartTargetingClassifiedEligiblePopulationCTE)
 		}
 	}
-	for _, population := range []string{smartTargetingBasePopulationCTE, smartTargetingSelectionBasePopulationCTE} {
+	for _, population := range []string{smartTargetingEligiblePopulationBaseCTE, smartTargetingSelectableAudienceBaseCTE} {
 		if !strings.Contains(population, "AND NOT EXISTS (\n          SELECT 1\n          FROM bundle_audience_exclusions") ||
 			strings.Contains(population, "?::boolean OR NOT EXISTS") {
 			t.Fatalf("Bundle exclusions must be unconditional for every selection phase:\n%s", population)
@@ -26,26 +26,26 @@ func TestSmartTargetingPopulationUsesOptionalParameterizedColorFilter(t *testing
 	}
 	for _, forbidden := range []string{"ap.uid", "ap.phone_number,", "ap.tags,"} {
 		if strings.Contains(query, forbidden) {
-			t.Fatalf("capacity population materializes unused column %q:\n%s", forbidden, smartTargetingPopulationCTE)
+			t.Fatalf("capacity population materializes unused column %q:\n%s", forbidden, smartTargetingClassifiedEligiblePopulationCTE)
 		}
 	}
-	selectionQuery := strings.ToLower(smartTargetingSelectionPopulationCTE)
+	selectionQuery := strings.ToLower(smartTargetingClassifiedSelectableAudienceCTE)
 	for _, required := range []string{"ap.uid", "ap.phone_number", "ap.tags", "ap.normalized_score"} {
 		if !strings.Contains(selectionQuery, required) {
-			t.Fatalf("execution selection population is missing %q:\n%s", required, smartTargetingSelectionPopulationCTE)
+			t.Fatalf("execution selection population is missing %q:\n%s", required, smartTargetingClassifiedSelectableAudienceCTE)
 		}
 	}
 }
 
 func TestSmartTargetingPopulationArgsKeepBundleExclusionsMandatory(t *testing.T) {
-	args := smartTargetingPopulationArgs(
+	args := smartTargetingEligiblePopulationArgs(
 		SmartTargetingAudienceQuery{TagIDs: []int64{7}, BundleID: 3, Phase: SmartTargetingSelectionPhaseExecution},
 	)
 	if disabled, ok := args[1].(bool); !ok || !disabled {
 		t.Fatalf("empty allowed colors produced disabled=%#v, want true", args[1])
 	}
 
-	args = smartTargetingPopulationArgs(SmartTargetingAudienceQuery{
+	args = smartTargetingEligiblePopulationArgs(SmartTargetingAudienceQuery{
 		TagIDs: []int64{7}, BundleID: 3, AllowedColors: []string{"white", "pink"}, Phase: SmartTargetingSelectionPhaseExecution,
 	})
 	if disabled, ok := args[1].(bool); !ok || disabled {
@@ -76,18 +76,18 @@ func TestSmartTargetingAudienceQueryRequiresExplicitSelectionPhase(t *testing.T)
 }
 
 func TestSmartTargetingAllClassesRequiresCanonicalDistinctSet(t *testing.T) {
-	if !smartTargetingAllClasses([]string{"A", "B", "C"}) {
+	if !smartTargetingSelectsAllScoreClasses([]string{"A", "B", "C"}) {
 		t.Fatal("canonical A/B/C selection must use the all-classes query")
 	}
 	for _, classes := range [][]string{{"A", "A", "A"}, {"C", "B", "A"}, {"A", "B"}} {
-		if smartTargetingAllClasses(classes) {
+		if smartTargetingSelectsAllScoreClasses(classes) {
 			t.Fatalf("invalid or non-canonical classes %v used the all-classes query", classes)
 		}
 	}
 }
 
 func TestSmartTargetingClassifiedPopulationCalculatesBothBoundsWithOneAggregate(t *testing.T) {
-	query := strings.ToLower(smartTargetingClassifiedPopulationCTE)
+	query := strings.ToLower(smartTargetingScoreClassificationCTE)
 	if got := strings.Count(query, "percentile_disc"); got != 1 {
 		t.Fatalf("classified population percentile aggregate count = %d, want 1:\n%s", got, query)
 	}
@@ -137,7 +137,7 @@ func TestSmartTargetingPerTagSelectionUsesNoOrdering(t *testing.T) {
 	query := SmartTargetingAudienceQuery{
 		BundleID: 3, Phase: SmartTargetingSelectionPhaseTest, TagIDs: []int64{9, 2}, ScoreClasses: []string{"A", "C"},
 	}
-	sql, args, err := smartTargetingPerTagSelectionQuery(
+	sql, args, err := buildSmartTargetingTestTagSelectionQuery(
 		query,
 		&SmartTargetingScoreBounds{P33: &p33, P66: &p66},
 		9,
@@ -168,7 +168,7 @@ func TestSmartTargetingPerTagSelectionUsesNoOrdering(t *testing.T) {
 		t.Fatalf("per-tag arguments = %#v, want tag, Bundle allocations/reservations, exclusions, two bounds, and limit", args)
 	}
 
-	fullSQL, _, err := smartTargetingPerTagSelectionQuery(query, &SmartTargetingScoreBounds{P33: &p33, P66: &p66}, 9, nil, 600, false)
+	fullSQL, _, err := buildSmartTargetingTestTagSelectionQuery(query, &SmartTargetingScoreBounds{P33: &p33, P66: &p66}, 9, nil, 600, false)
 	if err != nil {
 		t.Fatalf("build full per-tag selection query: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestSmartTargetingPerTagSelectionUsesNoOrdering(t *testing.T) {
 	if strings.Contains(strings.ToLower(fullSQL), "order by") {
 		t.Fatalf("final per-tag scheduler query unexpectedly imposes ordering:\n%s", fullSQL)
 	}
-	if _, _, err := smartTargetingPerTagSelectionQuery(query, &SmartTargetingScoreBounds{P33: &p33, P66: &p66}, 77, nil, 600, true); err == nil {
+	if _, _, err := buildSmartTargetingTestTagSelectionQuery(query, &SmartTargetingScoreBounds{P33: &p33, P66: &p66}, 77, nil, 600, true); err == nil {
 		t.Fatal("per-tag selection accepted a tag outside the selected set")
 	}
 }
@@ -193,7 +193,7 @@ func TestSmartTargetingPerTagSelectionPreservesAllClassColorEligibility(t *testi
 		ScoreClasses:  []string{"A", "B", "C"},
 		AllowedColors: []string{"white", "pink"},
 	}
-	sql, args, err := smartTargetingPerTagSelectionQuery(query, nil, 9, []int64{101}, 600, true)
+	sql, args, err := buildSmartTargetingTestTagSelectionQuery(query, nil, 9, []int64{101}, 600, true)
 	if err != nil {
 		t.Fatalf("build all-class per-tag selection query: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestSmartTargetingAudienceQueriesCanKeepOwnActiveTestReservation(t *testing
 		BundleID: 3, Phase: SmartTargetingSelectionPhaseTest, ExcludeActiveTestReservationCampaignID: 17,
 		TagIDs: []int64{9}, ScoreClasses: []string{"A", "B", "C"},
 	}
-	args := smartTargetingPopulationArgs(query)
+	args := smartTargetingEligiblePopulationArgs(query)
 	if args[5] != uint(17) || args[6] != uint(17) {
 		t.Fatalf("population reservation scope = %#v, want campaign 17 twice", args)
 	}
@@ -238,7 +238,7 @@ func TestSmartTargetingAudienceQueriesCanKeepOwnActiveTestReservation(t *testing
 		t.Fatalf("score-bound reservation scope = %#v, want campaign 17 twice", args)
 	}
 
-	_, args, err := smartTargetingPerTagSelectionQuery(query, nil, 9, nil, 1, true)
+	_, args, err := buildSmartTargetingTestTagSelectionQuery(query, nil, 9, nil, 1, true)
 	if err != nil {
 		t.Fatalf("build scoped per-tag query: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestSmartTargetingPerTagScorePredicatesPreserveClassBoundaries(t *testing.T
 		{[]string{"A", "B", "C"}, "", nil},
 	}
 	for _, tt := range tests {
-		sql, args, err := smartTargetingPerTagScorePredicate(tt.classes, bounds)
+		sql, args, err := buildSmartTargetingScoreClassPredicate(tt.classes, bounds)
 		if err != nil {
 			t.Fatalf("classes %v failed: %v", tt.classes, err)
 		}
@@ -274,12 +274,12 @@ func TestSmartTargetingPerTagScorePredicatesPreserveClassBoundaries(t *testing.T
 	}
 
 	emptyBounds := &SmartTargetingScoreBounds{}
-	if sql, args, err := smartTargetingPerTagScorePredicate([]string{"A"}, emptyBounds); err != nil ||
+	if sql, args, err := buildSmartTargetingScoreClassPredicate([]string{"A"}, emptyBounds); err != nil ||
 		!strings.Contains(sql, "AND FALSE") ||
 		len(args) != 0 {
 		t.Fatalf("empty population predicate = %q %#v, %v; want AND FALSE", sql, args, err)
 	}
-	if _, _, err := smartTargetingPerTagScorePredicate([]string{"A"}, nil); err == nil {
+	if _, _, err := buildSmartTargetingScoreClassPredicate([]string{"A"}, nil); err == nil {
 		t.Fatal("restricted classes without score bounds must fail closed")
 	}
 }
