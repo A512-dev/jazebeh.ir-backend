@@ -132,3 +132,10 @@ Audit read queries—`ListByCustomer`, `ListByAction`, `ListFailedActions`, `Lis
 5. **Audience-spec cache refresh and price-factor lookups can become hot reads.** Cache misses or frequent configuration edits cause repeated reference-data and latest-per-segment queries during campaign previews and validation.
 6. **Binary media is loaded through application flows.** Large preview/download payloads consume process memory and database/storage bandwidth and can contend with delivery workers retrieving campaign media.
 
+## Related environment variables
+
+- Card payments: `ATIPAY_API_KEY`, `ATIPAY_TERMINAL`
+- Payment/system actors: `SYSTEM_USER_UUID`, `TAX_USER_UUID`, `SYSTEM_USER_MOBILE`, `TAX_USER_MOBILE`, `SYSTEM_USER_EMAIL`, `TAX_USER_EMAIL`, `SYSTEM_WALLET_UUID`, `TAX_WALLET_UUID`, `SYSTEM_SHEBA_NUMBER`
+- Payment notifications: `MESSAGE_DEPOSIT_RECEIPT_SUBMITTED_TEMPLATE`, `MESSAGE_INVOICE_ISSUE_REQUEST_TEMPLATE`, `ADMIN_DEPOSIT_REVIEWER`
+- Short-link synchronization: `EXTERNAL_SHORTLINK_ENABLED`, `EXTERNAL_SHORTLINK_BASE_URL`, `EXTERNAL_SHORTLINK_API_TOKEN`, `EXTERNAL_SHORTLINK_CLIENT_CERT_FILE`, `EXTERNAL_SHORTLINK_CLIENT_KEY_FILE`, `EXTERNAL_SHORTLINK_CA_FILE`, `EXTERNAL_SHORTLINK_ALLOW_INSECURE_HTTP`, `EXTERNAL_SHORTLINK_REQUEST_TIMEOUT`, `EXTERNAL_SHORTLINK_MAPPING_SYNC_INTERVAL`, `EXTERNAL_SHORTLINK_CLICK_SYNC_INTERVAL`, `EXTERNAL_SHORTLINK_MAPPING_BATCH_SIZE`, `EXTERNAL_SHORTLINK_MAPPING_PARALLELISM`, `EXTERNAL_SHORTLINK_CLICK_PAGE_SIZE`, `EXTERNAL_SHORTLINK_MAX_CLICK_PAGES_PER_RUN`
+
