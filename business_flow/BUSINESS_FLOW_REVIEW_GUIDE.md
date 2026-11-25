@@ -8,6 +8,19 @@ invariants.
 
 ## Recommended reading path
 
+For the detailed guides to the customer bundle, campaign and smart-targeting
+implementations, start with [bundle flow](../docs/guide/bundle-flow.md),
+[bundle actions](../docs/guide/bundle-action-flow.md),
+[tag evaluation](../docs/guide/bundle-tag-evaluation-flow.md), and
+[campaign flow](../docs/guide/campaign-flow.md). The targeting sequence is
+[tag selection](../docs/guide/smart-targeting-flow.md),
+[capacity](../docs/guide/smart-targeting-capacity-flow.md),
+[test sampling](../docs/guide/smart-targeting-sampling-flow.md), and
+[execution calculation](../docs/guide/smart-targeting-execution-calculation-flow.md).
+Continue with [admin](../docs/guide/campaign-admin-flow.md),
+[bot](../docs/guide/campaign-bot-flow.md), and
+[audience report jobs](../docs/guide/campaign-audience-report-job-flow.md).
+
 ```text
 Bundle definition
   -> tag evaluation (optional AI scoring)
