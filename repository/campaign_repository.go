@@ -27,6 +27,7 @@ func NewCampaignRepository(db *gorm.DB) CampaignRepository {
 }
 
 // statisticsWithoutTrackingResults is the SELECT expression that returns all statistics
+// TODO: Q: didnt undrestand the below comment
 // keys except "trackingResults", which can be very large and is excluded from read queries.
 const statisticsWithoutTrackingResults = "campaigns.id, campaigns.uuid, campaigns.customer_id, campaigns.hidden, campaigns.status, " +
 	"campaigns.created_at, campaigns.updated_at, campaigns.spec, campaigns.comment, " +
@@ -348,11 +349,13 @@ func (r *CampaignRepositoryImpl) GetScheduledCampaigns(ctx context.Context, from
 	return r.ByFilter(ctx, filter, "schedule_at ASC", 0, 0)
 }
 
+// TODO: Q: why is this here and what good is it for?
 const automatedClickUserAgentPattern = utils.AutomatedClickUserAgentPattern
 
 // nonAutomatedClickTrafficSQL implements the bot-filtering rules used for all
 // click-derived metrics. tableAlias may be empty or name the short-link-click
 // table in a join.
+// TODO: didnt undrestand this
 func nonAutomatedClickTrafficSQL(tableAlias string) string {
 	prefix := ""
 	if tableAlias != "" {

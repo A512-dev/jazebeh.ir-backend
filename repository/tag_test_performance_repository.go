@@ -123,6 +123,8 @@ func (r *TagTestPerformanceRepositoryImpl) getDB(ctx context.Context) *gorm.DB {
 	return r.db.WithContext(ctx)
 }
 
+//TODO: Q: why do have the discover pending campaigns here in this file?, what does it do and why?
+
 // DiscoverPending advances the click/status cursors only after every affected
 // Campaign has a durable queue row. Retryable failed jobs remain claimable
 // without a new source event; terminal invalid Campaigns do not spin forever.
@@ -172,6 +174,10 @@ func (r *TagTestPerformanceRepositoryImpl) DiscoverPending(ctx context.Context, 
 		return nil
 	})
 }
+
+//TODO: Q: why do we have the claim pending campaigns here in this file?, what does it do and why?
+// isnt it for changing a campaigns status to preparing and then returning the campaigns that are in preparing status?
+// then what does it have to do with the tag_test_performance s?
 
 // ClaimPending leases reports across scheduler replicas. A process crash is
 // recovered by reclaiming a stale preparing row.
