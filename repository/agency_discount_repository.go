@@ -22,6 +22,7 @@ func NewAgencyDiscountRepository(db *gorm.DB) AgencyDiscountRepository {
 	}
 }
 
+//TODO: NOTE: why not write thisin the models? or somewhere seperate?
 // AgencyDiscountWithCustomer is a projection row joining discount and customer info
 type AgencyDiscountWithCustomer struct {
 	DiscountID              uint       `gorm:"column:discount_id"`

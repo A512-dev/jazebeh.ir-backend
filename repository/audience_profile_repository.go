@@ -83,6 +83,7 @@ func (r *AudienceProfileRepositoryImpl) ByUIDs(ctx context.Context, uids []strin
 	return rows, nil
 }
 
+// TODO: how isthe use of this func different than the ByUIDs func? It seems to be doing the same thing but is not a method of the repository struct. Should it be a method instead?
 func audienceProfilesByUIDsQuery(db *gorm.DB, uids []string) *gorm.DB {
 	return db.Model(&models.AudienceProfile{}).
 		Select("id", "uid", "phone_number").
@@ -113,6 +114,7 @@ func (r *AudienceProfileRepositoryImpl) SelectCampaignCandidates(
 	return rows, nil
 }
 
+// TODO: read the queries later, count the query numbers in this function to see the load
 func (r *AudienceProfileRepositoryImpl) campaignCandidatesQuery(
 	db *gorm.DB,
 	filter models.AudienceProfileFilter,

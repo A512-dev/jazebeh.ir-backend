@@ -42,6 +42,7 @@ var ErrBundleActionFileNotStaged = errors.New("bundle action file is not staged"
 
 type BundleActionRepositoryImpl struct{ db *gorm.DB }
 
+// TODO: Q: why doesnt this get from baserepository like the rest ?
 func NewBundleActionRepository(db *gorm.DB) BundleActionRepository {
 	return &BundleActionRepositoryImpl{db: db}
 }
@@ -116,6 +117,7 @@ func (r *BundleActionRepositoryImpl) DiscardStaged(ctx context.Context, id int64
 	return result.RowsAffected == 1, nil
 }
 
+// TODO: read the queries later
 func (r *BundleActionRepositoryImpl) ClaimPending(ctx context.Context, limit int, stale, at time.Time) ([]*models.BundleActionFile, error) {
 	if limit < 1 {
 		limit = 1
@@ -254,6 +256,7 @@ func (r *BundleActionRepositoryImpl) StoreUIDsAndResult(
 
 		// The lateral lookup ensures that a UID is resolved only inside this
 		// Bundle.  The bundle-member uniqueness constraint makes this one row.
+		//TODO: read the query in detail later, and check if it can be optimized
 		const resolveUIDs = `
 WITH resolved AS (
     SELECT u.id,
@@ -421,6 +424,8 @@ func (r *BundleActionRepositoryImpl) Complete(ctx context.Context, id int64, lea
 	})
 }
 
+//TODO: read the queries later, thereappears to be manyyyy joins in it!!
+
 // bundleActionEligibleAudienceSQL intentionally joins immutable selection and tag
 // attribution rows. It never consults audience_profiles.tags, which are live
 // mutable profile metadata rather than historical campaign attribution.
@@ -442,6 +447,13 @@ WITH active_actions AS (
  )
 ), marked AS (SELECT e.*, EXISTS(SELECT 1 FROM active_actions ac WHERE ac.uid=e.uid) action FROM eligible e)`
 
+// On completion, refreshBundleActionMetrics rebuilds campaign and tag metric
+// from processed action files and eligible delivered audience.
+// It serializes completion on the bundle row so concurrent file completions
+// cannot publish a stale partial snapshot.
+// The derived audience uses the immutable bundle selection and
+// campaign tag-attribution records, plus delivery status;
+// it does not rely on mutable profile tags.
 func refreshBundleActionMetrics(tx *gorm.DB, bundleID uint, at time.Time) error {
 	var active int64
 	if err := tx.Model(&models.BundleActionFile{}).Where("bundle_id=? AND status=?", bundleID, models.BundleActionFileProcessed).Count(&active).Error; err != nil {
