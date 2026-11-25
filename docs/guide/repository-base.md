@@ -60,3 +60,6 @@ Both saves use the same transaction. If either returns an error, neither write i
 ## Filtering methods
 
 Generic `ByFilter`, `Count`, and reflection-based `applyFilter` implementations remain in this file only as commented-out code. Active filtering is implemented by concrete repositories, which can express model-specific fields, joins, and conditions in their own `applyFilter`, `ByFilter`, and `Count` methods. For example, see `repository/audit_log_repository.go`.
+## Reading derived repositories
+
+The base implementation supplies generic insertion and transaction plumbing, not domain-specific validation or filtering. When reviewing a concrete repository, check whether it embeds `BaseRepository`, overrides a method, uses `getDBForWrite`, or bypasses the base and calls `db.WithContext` directly. Those choices determine whether a context transaction is reused and which code owns commit and rollback. Also check affected-row handling in each concrete update: a nil database error alone does not prove that a guarded update matched a row.

@@ -14,3 +14,8 @@ The date range predicates are strict: `CreatedAfter` uses `created_at > ?` and `
 ## Updates
 
 `UpdateStatus` updates the status and `updated_at` timestamp for a row. `AppendMetadata` updates JSONB metadata by merging one key/value into the existing object, treating null metadata as `{}`. Both use `getDBForWrite`, so they join an outer transaction if present or manage their own write transaction otherwise.
+## Types and methods
+
+`PlatformSettingsRepositoryImpl` embeds `BaseRepository[models.PlatformSettings, models.PlatformSettingsFilter]`; `NewPlatformSettingsRepository` initializes it. `ByID` returns nil on absence. `ByUUID` parses the UUID and uses `ByFilter`, returning parsing errors separately.
+
+`applyFilter` handles ID, UUID, customer, name, platform, status, multimedia and exclusive creation-time bounds. `ByFilter` applies it with optional pagination and defaults to descending ID order; `Count` uses the same conditions and `Exists` delegates to it. Caller-supplied ordering should be trusted. `UpdateStatus` writes status and update time; `AppendMetadata` merges one string key/value into the existing JSON object and updates the timestamp. Both use the base write transaction helper and do not check affected-row counts.

@@ -7,3 +7,6 @@
 - `ListLatest` uses PostgreSQL `DISTINCT ON (platform)` to return one latest row per platform. The ordering makes the newest creation time win, with ID as a tie-breaker.
 
 These methods are read/insert operations only; this repository does not define a general filter, count, or update method.
+## Types and methods
+
+`PagePriceRepositoryImpl` embeds `BaseRepository[models.PagePrice, struct{}]`; `NewPagePriceRepository` constructs it. `Insert` creates a price row. `LatestByPlatform` selects by creation time then ID descending and returns `(nil, nil)` when absent. `ListLatest` uses PostgreSQL `DISTINCT ON` to return one latest row per platform, ordered by platform with ID breaking equal-timestamp ties. These reads and writes use the inherited context-aware database helper.

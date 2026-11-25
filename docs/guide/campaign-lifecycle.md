@@ -80,3 +80,8 @@ Other customer operations include cloning and hiding/unhiding campaigns. They ar
 ## Suggested reading exercise
 
 Trace a single create request using `CreateCampaignRequest` → handler → `CampaignFlowImpl.CreateCampaign` → `createCampaign` → repository → `Campaign`. Then trace the same campaign through `UpdateCampaign` with `Finalize`, admin `ApproveCampaign`, and the SMS scheduler. At each step write down: the actor, input, current status required, repositories touched, transaction boundary, resulting status, and possible errors. Finally compare with a smart-targeting or Excel branch and read the nearby tests for concrete examples and edge cases.
+## Transaction and recovery reading notes
+
+When following finalization into execution, distinguish a proposed audience, its temporary reservation, and the permanent bundle selection. Reservation readers validate the frozen members before materialization; cancellation or invalidation releases claims under locks. See [execution reservations](campaign-targeting-execution-reservation-repository.md), [test sample selections](campaign-targeting-test-sample-selection-repository.md), and [bundle audience selections](bundle-audience-selection-repository.md) for their method contracts.
+
+For a failed or stale scheduler run, follow the persisted send intent rather than assuming no provider request occurred. The [campaign execution guide](campaign-execution-repository.md) explains why recovery requeues only runs without delivery intent and interrupts the others. Provider status jobs and refund reconciliation have separate lifecycles; see the [status job](campaign-status-job-repository.md) and [refund reconciliation](campaign-refund-reconciliation-repository.md) guides.

@@ -14,3 +14,10 @@ The latest-row queries order by `created_at DESC`. If two records for a level ha
 ## Other queries
 
 `ByID` returns `(nil, nil)` for a missing row. `ByFilter` supports platform and level3, defaults to `created_at DESC`, and supports ordering and pagination. `Count` and `Exists` use the same filter conditions.
+## Types and methods
+
+`SegmentPriceFactorRepositoryImpl` embeds `BaseRepository[models.SegmentPriceFactor, models.SegmentPriceFactorFilter]`; `NewSegmentPriceFactorRepository` constructs it. `ByID` returns `(nil, nil)` when absent.
+
+`ListLatestByLevel3` and `LatestByLevel3s` use the SMS platform; their `ForPlatform` counterparts accept a platform explicitly. The list returns one row per level-3 segment; the map lookup returns only requested segments found, and returns an empty map without querying for empty input. Both use PostgreSQL `DISTINCT ON` ordered by creation time descending; equal timestamps have no explicit ID tie-breaker.
+
+`applyFilter` handles platform and level 3. `ByFilter` defaults to creation time descending and accepts positive pagination; `Count` and `Exists` use the same filter. Caller-provided order values should be trusted.
