@@ -39,6 +39,7 @@ Use these files when documentation and implementation differ:
 | Document | Purpose |
 |---|---|
 | [Backend codebase guide](guide/backend-codebase-guide.md) | Layer map, request and worker traces, domain navigation, and suggested reading order |
+| [Background jobs guide](guide/background-jobs-guide.md) | Job creation endpoints, worker lifecycles, polling and downloads, delivery status, recovery, and deployment ownership |
 | [Production deployment](PRODUCTION_DEPLOYMENT.md) | Fresh beta Compose deployment and release operations |
 | [Production migration](../PRODUCTION_MIGRATION.md) | Canonical server move, restore, imports, and cutover |
 | [Production configuration](PRODUCTION_CONFIGURATION.md) | Current environment parsing, required values, worker ownership, and runtime caveats |

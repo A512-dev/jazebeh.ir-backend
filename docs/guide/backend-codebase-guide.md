@@ -63,6 +63,8 @@ The same reading pattern works for a bug: **route → middleware → handler →
 
 ## 5. How asynchronous work differs
 
+For the complete endpoint-to-worker-to-result walkthrough, use the [background jobs guide](background-jobs-guide.md). It covers each queue, client polling and downloads, recovery, and production worker ownership.
+
 An API can create a durable job and return before the expensive work is done. A scheduler later claims it, runs a flow or worker routine and persists a result. For a concrete example, trace `POST /api/v1/campaigns/:uuid/smart-targeting/capacity-calculations` through [campaign_handler.go](../../app/handlers/campaign_handler.go), `Start` in [smart_targeting_capacity_flow.go](../../business_flow/smart_targeting_capacity_flow.go), the calculation repository, and [smart_targeting_capacity_scheduler.go](../../app/scheduler/smart_targeting_capacity_scheduler.go). The scheduler claims rows and passes the calculation ID and lease start time to the executor.
 
 Many queues use row locks, `SKIP LOCKED`, lease timestamps or tokens so replicas can share work and recover after a crash. The exact guard differs by queue: read its repository and worker rather than assuming all workers have the same retry or stale-lease policy. In particular, a successful request to enqueue a job is not proof that its calculation or external operation has completed.
