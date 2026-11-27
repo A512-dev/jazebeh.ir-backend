@@ -69,8 +69,7 @@ type CampaignHandlerInterface interface {
 // @Produce json
 // @Security BearerAuth
 // @Param uuid path string true "Owned Smart Targeting Execution campaign UUID" format(uuid)
-// @Success 202 {object} dto.APIResponse{data=dto.SmartTargetingExecutionCalculationResponse} "Execution audience calculation requested
-// successfully"
+// @Success 202 {object} dto.APIResponse{data=dto.SmartTargetingExecutionCalculationResponse} "Execution audience calculation requested successfully"
 // @Failure 401 {object} dto.APIResponse "Authentication required"
 // @Failure 403 {object} dto.APIResponse "Campaign access denied or campaign is not editable"
 // @Failure 404 {object} dto.APIResponse "Campaign not found"
@@ -115,8 +114,7 @@ func (h *CampaignHandler) StartSmartTargetingExecutionCalculation(c fiber.Ctx) e
 // @Produce json
 // @Security BearerAuth
 // @Param uuid path string true "Owned Smart Targeting Execution campaign UUID" format(uuid)
-// @Success 200 {object} dto.APIResponse{data=dto.SmartTargetingExecutionCalculationResponse} "Current execution audience calculation
-// retrieved successfully"
+// @Success 200 {object} dto.APIResponse{data=dto.SmartTargetingExecutionCalculationResponse} "Current execution audience calculation retrieved successfully"
 // @Failure 401 {object} dto.APIResponse "Authentication required"
 // @Failure 403 {object} dto.APIResponse "Campaign access denied"
 // @Failure 404 {object} dto.APIResponse "Campaign not found"
@@ -157,8 +155,7 @@ func (h *CampaignHandler) GetCurrentSmartTargetingExecutionCalculation(c fiber.C
 // @Security BearerAuth
 // @Param uuid path string true "Owned Smart Targeting Execution campaign UUID" format(uuid)
 // @Param calculation_id path int true "Execution audience calculation ID" minimum(1)
-// @Success 200 {object} dto.APIResponse{data=dto.SmartTargetingExecutionCalculationResponse} "Execution audience calculation retrieved
-// successfully"
+// @Success 200 {object} dto.APIResponse{data=dto.SmartTargetingExecutionCalculationResponse} "Execution audience calculation retrieved successfully"
 // @Failure 400 {object} dto.APIResponse "Invalid calculation ID"
 // @Failure 401 {object} dto.APIResponse "Authentication required"
 // @Failure 403 {object} dto.APIResponse "Campaign access denied"
@@ -519,8 +516,7 @@ func (h *CampaignHandler) GetCampaignActionMetrics(c fiber.Ctx) error {
 // @Produce json
 // @Security BearerAuth
 // @Param uuid path string true "Owned campaign UUID" format(uuid)
-// @Param request body dto.StartSmartTargetingCapacityCalculationRequest false "Score-class selection; omitted reuses the campaign
-// selection, with an empty campaign selection meaning A, B, and C"
+// @Param request body dto.StartSmartTargetingCapacityCalculationRequest false "Score-class selection; omitted reuses the campaign selection, with an empty campaign selection meaning A, B, and C"
 // @Success 202 {object} dto.APIResponse{data=dto.SmartTargetingCapacityCalculationResponse}
 // @Router /api/v1/campaigns/{uuid}/smart-targeting/capacity-calculations [post]
 func (h *CampaignHandler) StartSmartTargetingCapacityCalculation(c fiber.Ctx) error {
@@ -1517,12 +1513,9 @@ func (h *CampaignHandler) CalculateCampaignCostV2(c fiber.Ctx) error {
 // @Produce json
 // @Param page query int true "Page number"
 // @Param limit query int true "Items per page (max 100)"
-// @Param orderby query string false "Order by
-// (newest|oldest|phase_test_first|phase_execution_first|highest_click_rate|lowest_click_rate|schedule_at_asc|schedule_at_desc)"
-// default(newest)
+// @Param orderby query string false "Order by (newest|oldest|phase_test_first|phase_execution_first|highest_click_rate|lowest_click_rate|schedule_at_asc|schedule_at_desc)" default(newest)
 // @Param title query string false "Filter by title (contains)"
-// @Param status query string false "Filter by status
-// (initiated|in-progress|waiting-for-approval|approved|rejected|running|executed|expired|cancelled|cancelled-by-admin)"
+// @Param status query string false "Filter by status (initiated|in-progress|waiting-for-approval|approved|rejected|running|executed|expired|cancelled|cancelled-by-admin)"
 // @Success 200 {object} dto.APIResponse{data=dto.ListCampaignsResponse}
 // @Failure 400 {object} dto.APIResponse "Validation error"
 // @Failure 401 {object} dto.APIResponse "Unauthorized"

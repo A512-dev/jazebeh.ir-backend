@@ -140,9 +140,7 @@ func (h *AuthAdminHandler) VerifyLogin(c fiber.Ctx) error {
 // @Accept json
 // @Produce json
 // @Param request body dto.AdminLoginVerifyOTPRequest true "Admin login OTP verification data"
-// @Success 200 {object}
-// dto.APIResponse{data=object{access_token=string,refresh_token=string,token_type=string,expires_in=int,admin=dto.AdminDTO}} "Login
-// successful"
+// @Success 200 {object} dto.APIResponse{data=object{access_token=string,refresh_token=string,token_type=string,expires_in=int,admin=dto.AdminDTO}} "Login successful"
 // @Failure 400 {object} dto.APIResponse "Invalid request body"
 // @Failure 401 {object} dto.APIResponse "Invalid or expired OTP"
 // @Failure 403 {object} dto.APIResponse "Admin inactive"

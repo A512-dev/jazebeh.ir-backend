@@ -20,6 +20,7 @@ func NewProfileFlow(customerRepo repository.CustomerRepository) ProfileFlow {
 	return &ProfileFlowImpl{customerRepo: customerRepo}
 }
 
+//NOTE: suggestion: we can maybe rename the two GetProfile methods to avoid confusion, like GetProfileHandler and GetProfileFlow.
 func (f *ProfileFlowImpl) GetProfile(ctx context.Context, customerID uint) (*dto.GetProfileResponse, error) {
 	if customerID == 0 {
 		return nil, NewBusinessError("CUSTOMER_ID_REQUIRED", "customer_id must be greater than 0", ErrCustomerNotFound)

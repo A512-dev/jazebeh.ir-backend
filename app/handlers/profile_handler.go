@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
+//TODO: Q: why is this here? i coulnt find the use of this interface.
 type ProfileHandlerInterface interface {
 	GetProfile(c fiber.Ctx) error
 }

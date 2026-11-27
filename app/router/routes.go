@@ -601,16 +601,20 @@ func (r *FiberRouter) setupMiddleware() {
 		XPermittedCrossDomain:     "none",
 	}))
 
+	allowedOrigins := []string{
+		"https://yamata-no-orochi.com",
+		"https://api.yamata-no-orochi.com",
+		"https://admin.yamata-no-orochi.com",
+		"https://monitoring.yamata-no-orochi.com",
+		"https://app.yamata-no-orochi.com",
+		"https://*.j0in.ir",
+	}
+	if env := os.Getenv("APP_ENV"); env == "development" || env == "local" {
+		allowedOrigins = append(allowedOrigins, "http://localhost:8081")
+	}
 	// CORS middleware with production settings
 	r.app.Use(cors.New(cors.Config{
-		AllowOrigins: []string{
-			"https://yamata-no-orochi.com",
-			"https://api.yamata-no-orochi.com",
-			"https://admin.yamata-no-orochi.com",
-			"https://monitoring.yamata-no-orochi.com",
-			"https://app.yamata-no-orochi.com",
-			"https://*.j0in.ir",
-		},
+		AllowOrigins: allowedOrigins,
 		AllowMethods: []string{
 			"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS",
 		},

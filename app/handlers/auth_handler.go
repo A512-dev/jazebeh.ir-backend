@@ -161,9 +161,7 @@ func (h *AuthHandler) Signup(c fiber.Ctx) error {
 // @Accept json
 // @Produce json
 // @Param request body dto.OTPVerificationRequest true "OTP verification data"
-// @Success 200 {object}
-// dto.APIResponse{data=object{access_token=string,refresh_token=string,token_type=string,expires_in=int,customer=dto.AuthCustomerDTO}} "OTP
-// verified successfully"
+// @Success 200 {object} dto.APIResponse{data=object{access_token=string,refresh_token=string,token_type=string,expires_in=int,customer=dto.AuthCustomerDTO}} "OTP verified successfully"
 // @Failure 400 {object} dto.APIResponse "Invalid OTP or request"
 // @Failure 404 {object} dto.APIResponse "User not found"
 // @Failure 500 {object} dto.APIResponse "Internal server error"
@@ -301,9 +299,7 @@ func (h *AuthHandler) ResendOTP(c fiber.Ctx) error {
 // @Accept json
 // @Produce json
 // @Param request body dto.LoginRequest true "Login credentials"
-// @Success 200 {object}
-// dto.APIResponse{data=object{access_token=string,refresh_token=string,token_type=string,expires_in=int,customer=dto.AuthCustomerDTO}}
-// "Login successful with tokens"
+// @Success 200 {object} dto.APIResponse{data=object{access_token=string,refresh_token=string,token_type=string,expires_in=int,customer=dto.AuthCustomerDTO}} "Login successful with tokens"
 // @Failure 400 {object} dto.APIResponse "Invalid credentials"
 // @Failure 401 {object} dto.APIResponse "Authentication failed"
 // @Failure 500 {object} dto.APIResponse "Internal server error"
@@ -481,9 +477,7 @@ func (h *AuthHandler) ForgotPassword(c fiber.Ctx) error {
 // @Accept json
 // @Produce json
 // @Param request body dto.ResetPasswordRequest true "Password reset data"
-// @Success 200 {object}
-// dto.APIResponse{data=object{access_token=string,refresh_token=string,token_type=string,expires_in=int,customer=dto.AuthCustomerDTO,password_changed_at=string}}
-// "Password reset successful with tokens"
+// @Success 200 {object} dto.APIResponse{data=object{access_token=string,refresh_token=string,token_type=string,expires_in=int,customer=dto.AuthCustomerDTO,password_changed_at=string}} "Password reset successful with tokens"
 // @Failure 400 {object} dto.APIResponse "Invalid request or OTP"
 // @Failure 404 {object} dto.APIResponse "User not found"
 // @Failure 500 {object} dto.APIResponse "Internal server error"
